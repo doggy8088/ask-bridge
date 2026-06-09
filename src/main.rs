@@ -37,8 +37,11 @@ struct Cli {
 
 #[derive(Subcommand, Clone)]
 enum Commands {
-    /// Open Chrome browser and focus on ChatGPT
-    Open,
+    /// Open Chrome browser, optionally navigate to a URL, and copy the latest response
+    Open {
+        /// Optional ChatGPT conversation URL to open before copying the latest response.
+        url: Option<String>,
+    },
     /// Open Chrome browser and wait for manual login
     Login,
 }
@@ -323,6 +326,48 @@ fn is_glow_available() -> bool {
         .unwrap_or(false)
 }
 
+fn render_markdown(markdown: &str, use_glow: bool) -> Result<(), String> {
+    if markdown.is_empty() {
+        return Ok(());
+    }
+
+    if use_glow {
+        let glow = Command::new("glow")
+            .arg("-")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn();
+
+        if let Ok(mut child) = glow {
+            if let Some(mut stdin) = child.stdin.take() {
+                if let Err(e) = stdin.write_all(markdown.as_bytes()) {
+                    eprintln!("Failed to send Markdown content to glow: {}", e);
+                }
+            }
+
+            match child.wait() {
+                Ok(status) if status.success() => {
+                    return Ok(());
+                }
+                Ok(status) => {
+                    eprintln!("glow exited with status: {}", status);
+                }
+                Err(e) => {
+                    eprintln!("Failed to wait for glow process: {}", e);
+                }
+            }
+        }
+    }
+
+    print!("{}", markdown);
+    io::stdout()
+        .flush()
+        .map_err(|e| format!("Failed to flush stdout: {}", e))?;
+
+    Ok(())
+}
+
 fn read_clipboard() -> Result<String, String> {
     let output = Command::new("pbpaste")
         .output()
@@ -333,6 +378,29 @@ fn read_clipboard() -> Result<String, String> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn write_clipboard(content: &str) -> Result<(), String> {
+    let mut child = Command::new("pbcopy")
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to run pbcopy: {}", e))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(content.as_bytes())
+            .map_err(|e| format!("Failed to write clipboard content: {}", e))?;
+    }
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("Failed to wait for pbcopy: {}", e))?;
+
+    if !status.success() {
+        return Err(format!("pbcopy exited with status: {}", status));
+    }
+
+    Ok(())
 }
 
 fn click_latest_copy_button(config_path: &str) -> Result<(), String> {
@@ -356,8 +424,27 @@ fn click_latest_copy_button(config_path: &str) -> Result<(), String> {
                     el.textContent
                 ].filter(Boolean).join(' ');
 
-                const isCopyButton = (el) => /copy|複製|复制|コピー|복사/i.test(labelOf(el));
-                const messages = Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
+                const isCopyButton = (el) => {
+                    const label = labelOf(el);
+                    return /copy|複製|复制|コピー|복사/i.test(label)
+                        && !/prompt|提示詞|提示词|入力|table|表格/i.test(label);
+                };
+                const copyButtonScore = (el) => {
+                    const label = labelOf(el);
+                    if (!isCopyButton(el) || !isVisible(el)) return -1;
+                    if (el.closest('pre, code, [class*="code"], [data-testid*="code"]')) return -1;
+                    if (/copy-turn-action-button/i.test(label)) return 100;
+                    if (/response|回應|回答|reply/i.test(label)) return 90;
+                    if (el.closest('model-response, response-container, [data-message-author-role="assistant"]')) return 50;
+                    return 10;
+                };
+                const messages = Array.from(document.querySelectorAll([
+                    '[data-message-author-role="assistant"]',
+                    'model-response',
+                    '.model-response',
+                    '[data-test-id*="response"]',
+                    '[data-testid*="response"]'
+                ].join(',')));
                 const latest = messages[messages.length - 1];
                 if (!latest) return { ok: false, reason: "No assistant message found" };
 
@@ -371,14 +458,17 @@ fn click_latest_copy_button(config_path: &str) -> Result<(), String> {
                     latest.closest('article'),
                     latest.closest('[data-testid^="conversation-turn"]'),
                     latest.parentElement,
-                    latest.parentElement?.parentElement,
-                    document
+                    latest.parentElement?.parentElement
                 ].filter(Boolean);
 
                 for (const scope of scopes) {
                     const buttons = Array.from(scope.querySelectorAll('button'));
-                    const button = buttons.find((btn) => isCopyButton(btn) && isVisible(btn));
-                    if (button) {
+                    const candidates = buttons
+                        .map((button) => ({ button, score: copyButtonScore(button) }))
+                        .filter((candidate) => candidate.score >= 0)
+                        .sort((a, b) => b.score - a.score);
+                    if (candidates.length > 0) {
+                        const button = candidates[0].button;
                         button.click();
                         return { ok: true, label: labelOf(button) };
                     }
@@ -398,6 +488,137 @@ fn click_latest_copy_button(config_path: &str) -> Result<(), String> {
             .unwrap_or("Failed to click copy response button")
             .to_string())
     }
+}
+
+fn wait_for_page_load(config_path: &str, verbose: bool) -> Result<(), String> {
+    if verbose {
+        println!("Waiting for page to load...");
+    }
+
+    for _ in 0..90 {
+        let ready_res = call_mcp_tool(
+            config_path,
+            "evaluate_script",
+            serde_json::json!({
+                "function": "() => document.readyState === 'complete' || document.readyState === 'interactive'"
+            }),
+        );
+
+        if let Ok(res) = ready_res {
+            if let Ok(parsed) = parse_script_result(&res) {
+                if parsed.as_bool().unwrap_or(false) {
+                    return Ok(());
+                }
+            }
+        }
+
+        thread::sleep(Duration::from_millis(500));
+    }
+
+    Err("Timeout waiting for page to load".to_string())
+}
+
+fn open_url_tab(config_path: &str, url: &str, verbose: bool) -> Result<(), String> {
+    if verbose {
+        println!("Opening URL: {}", url);
+    }
+
+    let list_res = call_mcp_tool(config_path, "list_pages", serde_json::json!({}))?;
+    let text = list_res
+        .get("content")
+        .and_then(|c| c.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|obj| obj.get("text"))
+        .and_then(|t| t.as_str())
+        .ok_or_else(|| format!("Invalid list_pages response structure: {:?}", list_res))?;
+
+    let pages = parse_pages(text);
+    if pages.len() == 1
+        && (pages[0].url == "about:blank"
+            || pages[0].url.contains("new-tab-page")
+            || pages[0].url.contains("chrome://welcome"))
+    {
+        call_mcp_tool(
+            config_path,
+            "navigate_page",
+            serde_json::json!({
+                "url": url
+            }),
+        )?;
+    } else {
+        call_mcp_tool(
+            config_path,
+            "new_page",
+            serde_json::json!({
+                "url": url
+            }),
+        )?;
+    }
+
+    for _ in 0..20 {
+        let refreshed_pages_res = call_mcp_tool(config_path, "list_pages", serde_json::json!({}))?;
+        let refreshed_text = refreshed_pages_res
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|obj| obj.get("text"))
+            .and_then(|t| t.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "Invalid refreshed list_pages response structure: {:?}",
+                    refreshed_pages_res
+                )
+            })?;
+
+        let refreshed_pages = parse_pages(refreshed_text);
+        if let Some(page) = refreshed_pages.iter().find(|page| page.url == url) {
+            call_mcp_tool(
+                config_path,
+                "select_page",
+                serde_json::json!({
+                    "pageId": page.id,
+                    "bringToFront": true
+                }),
+            )?;
+
+            for stale_page in refreshed_pages.iter().filter(|p| p.id != page.id) {
+                let _ = call_mcp_tool(
+                    config_path,
+                    "close_page",
+                    serde_json::json!({
+                        "pageId": stale_page.id
+                    }),
+                );
+            }
+
+            return wait_for_page_load(config_path, verbose);
+        }
+
+        thread::sleep(Duration::from_millis(250));
+    }
+
+    wait_for_page_load(config_path, verbose)
+}
+
+fn copy_latest_markdown(config_path: &str) -> Result<String, String> {
+    let clipboard_before = read_clipboard().unwrap_or_default();
+    let sentinel = format!("__ASK_CHATGPT_COPY_PENDING_{}__", std::process::id());
+    write_clipboard(&sentinel)?;
+
+    click_latest_copy_button(config_path)?;
+
+    for _ in 0..30 {
+        thread::sleep(Duration::from_millis(100));
+        match read_clipboard() {
+            Ok(content) if !content.trim().is_empty() && content != sentinel => {
+                return Ok(content);
+            }
+            _ => {}
+        }
+    }
+
+    let _ = write_clipboard(&clipboard_before);
+    Err("Timed out waiting for clipboard content after clicking copy".to_string())
 }
 
 fn ensure_chatgpt_tab(config_path: &str, force_new: bool, verbose: bool) -> Result<(), String> {
@@ -641,7 +862,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let is_terminal = io::stdout().is_terminal();
     let use_glow = is_terminal && is_glow_available();
-    let mut glow_rendered = false;
 
     let config_path = match write_mcp_config(!cli.verbose) {
         Ok(path) => path,
@@ -664,12 +884,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(command) = cli.command {
         match command {
-            Commands::Open => {
-                if let Err(e) = ensure_chatgpt_tab(&config_path, false, cli.verbose) {
-                    eprintln!("Error ensuring ChatGPT tab: {}", e);
-                    std::process::exit(1);
+            Commands::Open { url } => {
+                if let Some(url) = url {
+                    if let Err(e) = open_url_tab(&config_path, &url, cli.verbose) {
+                        eprintln!("Error opening URL: {}", e);
+                        std::process::exit(1);
+                    }
+
+                    match copy_latest_markdown(&config_path) {
+                        Ok(markdown) => {
+                            if let Some(ref output_path) = cli.output {
+                                if let Err(e) = std::fs::write(output_path, &markdown) {
+                                    eprintln!("Error writing output file: {}", e);
+                                    std::process::exit(1);
+                                }
+                            }
+                            if let Err(e) = render_markdown(&markdown, use_glow) {
+                                eprintln!("Error rendering Markdown: {}", e);
+                                std::process::exit(1);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error copying latest response Markdown: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    if let Err(e) = ensure_chatgpt_tab(&config_path, false, cli.verbose) {
+                        eprintln!("Error ensuring ChatGPT tab: {}", e);
+                        std::process::exit(1);
+                    }
+                    println!("Successfully opened ChatGPT!");
                 }
-                println!("Successfully opened ChatGPT!");
                 return Ok(());
             }
             Commands::Login => {
@@ -910,39 +1156,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    if use_glow && !last_markdown.is_empty() {
-        let glow = Command::new("glow")
-            .arg("-")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .spawn();
-
-        if let Ok(mut child) = glow {
-            if let Some(mut stdin) = child.stdin.take() {
-                if let Err(e) = stdin.write_all(last_markdown.as_bytes()) {
-                    eprintln!("Failed to send Markdown content to glow: {}", e);
-                }
-            }
-
-            match child.wait() {
-                Ok(status) if status.success() => {
-                    glow_rendered = true;
-                }
-                Ok(status) => {
-                    eprintln!("glow exited with status: {}", status);
-                }
-                Err(e) => {
-                    eprintln!("Failed to wait for glow process: {}", e);
-                }
-            }
-        }
-    }
-
-    if is_terminal && !glow_rendered {
-        print!("{}", last_markdown);
-    } else if !is_terminal {
-        print!("{}", last_markdown);
+    if let Err(e) = render_markdown(&last_markdown, use_glow) {
+        eprintln!("Error rendering Markdown: {}", e);
     }
 
     // Print the URL link of the current conversation thread
