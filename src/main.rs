@@ -42,6 +42,11 @@ enum Commands {
         /// Optional ChatGPT conversation URL to open before copying the latest response.
         url: Option<String>,
     },
+    /// Retrieve the latest response from ChatGPT (defaults to headless)
+    Get {
+        /// Optional ChatGPT conversation URL to fetch before copying the latest response.
+        url: Option<String>,
+    },
     /// Open Chrome browser and wait for manual login
     Login,
 }
@@ -52,31 +57,49 @@ struct Page {
     selected: bool,
 }
 
-fn write_mcp_config(quiet_mcp: bool) -> Result<String, String> {
+fn write_mcp_config(quiet_mcp: bool, headless: bool) -> Result<String, String> {
     let mut config_dir = home::home_dir().ok_or("Could not locate home directory")?;
     config_dir.push(".config/ask-chatgpt");
     std::fs::create_dir_all(&config_dir)
         .map_err(|e| format!("Failed to create config directory: {}", e))?;
 
+    let log_path = config_dir.join("chrome-devtools-mcp.log").to_string_lossy().to_string();
+
     config_dir.push("mcp_servers.json");
     let config_path = config_dir.to_string_lossy().to_string();
 
     let mut chrome_devtools_server = if quiet_mcp {
+        let mut sh_cmd = format!(
+            "exec npx -y chrome-devtools-mcp@latest --browser-url=http://127.0.0.1:9223 --no-usage-statistics --no-performance-crux --logFile \"{}\"",
+            log_path
+        );
+        if headless {
+            sh_cmd.push_str(" --headless");
+        }
+        sh_cmd.push_str(" 2>/dev/null");
+
         serde_json::json!({
             "command": "sh",
             "args": [
                 "-c",
-                "exec npx -y chrome-devtools-mcp@latest --browser-url=http://127.0.0.1:9223 --no-usage-statistics --no-performance-crux 2>/dev/null"
+                sh_cmd
             ]
         })
     } else {
+        let mut mcp_args = vec![
+            "-y".to_string(),
+            "chrome-devtools-mcp@latest".to_string(),
+            "--browser-url=http://127.0.0.1:9223".to_string(),
+        ];
+        if headless {
+            mcp_args.push("--headless".to_string());
+        }
+        mcp_args.push("--logFile".to_string());
+        mcp_args.push(log_path);
+
         serde_json::json!({
             "command": "npx",
-            "args": [
-                "-y",
-                "chrome-devtools-mcp@latest",
-                "--browser-url=http://127.0.0.1:9223"
-            ]
+            "args": mcp_args
         })
     };
 
@@ -149,7 +172,7 @@ fn start_chrome_if_needed(headless: bool, verbose: bool) -> Result<(), String> {
         cmd.arg("--ask-chatgpt-background")
             .arg("--disable-blink-features=AutomationControlled")
             .arg("--window-size=1440,1200")
-            .arg("--window-position=-10000,-10000");
+            .arg("--window-position=-2000,-2000");
     }
 
     cmd.stdout(std::process::Stdio::null())
@@ -207,7 +230,7 @@ fn is_debug_chrome_background(profile_path: &str) -> bool {
         process_command(pid)
             .map(|cmd| {
                 cmd.contains(&profile_arg)
-                    && (cmd.contains("--headless") || cmd.contains("--ask-chatgpt-background"))
+                    && cmd.contains("--ask-chatgpt-background")
             })
             .unwrap_or(false)
     })
@@ -605,7 +628,26 @@ fn copy_latest_markdown(config_path: &str) -> Result<String, String> {
     let sentinel = format!("__ASK_CHATGPT_COPY_PENDING_{}__", std::process::id());
     write_clipboard(&sentinel)?;
 
-    click_latest_copy_button(config_path)?;
+    // Click the copy button, retrying if the message or button is not found yet (due to asynchronous rendering of Single Page App)
+    let mut click_err = None;
+    for _ in 0..30 {
+        match click_latest_copy_button(config_path) {
+            Ok(_) => {
+                click_err = None;
+                break;
+            }
+            Err(e) => {
+                click_err = Some(e);
+                thread::sleep(Duration::from_millis(500));
+            }
+        }
+    }
+
+    if let Some(err) = click_err {
+        // Restore clipboard before returning error
+        let _ = write_clipboard(&clipboard_before);
+        return Err(format!("Error copying latest response Markdown: {}", err));
+    }
 
     let mut copied_content = None;
     for _ in 0..30 {
@@ -885,18 +927,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let is_terminal = io::stdout().is_terminal();
     let use_glow = is_terminal && is_glow_available();
 
-    let config_path = match write_mcp_config(!cli.verbose) {
+    let is_headless = match &cli.command {
+        Some(Commands::Login) => false, // Force headful only for login command so user can see it to log in
+        _ => cli.headless, // Respect --headless (defaults to true) for all other commands (including Open and Get)
+    };
+
+    let config_path = match write_mcp_config(!cli.verbose, is_headless) {
         Ok(path) => path,
         Err(e) => {
             eprintln!("Error: {}", e);
             std::process::exit(1);
         }
-    };
-
-    let is_headless = if cli.command.is_some() {
-        false // Force headful for login/open commands so user can see it
-    } else {
-        cli.headless
     };
 
     if let Err(e) = start_chrome_if_needed(is_headless, cli.verbose) {
@@ -937,6 +978,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         std::process::exit(1);
                     }
                     println!("Successfully opened ChatGPT!");
+                }
+                return Ok(());
+            }
+            Commands::Get { url } => {
+                if let Some(url) = url {
+                    if let Err(e) = open_url_tab(&config_path, &url, cli.verbose) {
+                        eprintln!("Error opening URL: {}", e);
+                        std::process::exit(1);
+                    }
+                } else {
+                    if let Err(e) = ensure_chatgpt_tab(&config_path, false, cli.verbose) {
+                        eprintln!("Error ensuring ChatGPT tab: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+
+                match copy_latest_markdown(&config_path) {
+                    Ok(markdown) => {
+                        if let Some(ref output_path) = cli.output {
+                            if let Err(e) = std::fs::write(output_path, &markdown) {
+                                eprintln!("Error writing output file: {}", e);
+                                std::process::exit(1);
+                            }
+                        }
+                        if let Err(e) = render_markdown(&markdown, use_glow) {
+                            eprintln!("Error rendering Markdown: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error copying latest response Markdown: {}", e);
+                        std::process::exit(1);
+                    }
                 }
                 return Ok(());
             }
