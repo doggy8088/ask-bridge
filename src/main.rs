@@ -3,7 +3,7 @@ use mcp_cli::McpClient;
 use serde_json::Value;
 use std::io::{self, IsTerminal, Read, Write};
 use std::net::TcpStream;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
@@ -49,7 +49,7 @@ struct Page {
     selected: bool,
 }
 
-fn write_mcp_config() -> Result<String, String> {
+fn write_mcp_config(quiet_mcp: bool) -> Result<String, String> {
     let mut config_dir = home::home_dir().ok_or("Could not locate home directory")?;
     config_dir.push(".config/ask-chatgpt");
     std::fs::create_dir_all(&config_dir)
@@ -58,16 +58,42 @@ fn write_mcp_config() -> Result<String, String> {
     config_dir.push("mcp_servers.json");
     let config_path = config_dir.to_string_lossy().to_string();
 
+    let mut chrome_devtools_server = if quiet_mcp {
+        serde_json::json!({
+            "command": "sh",
+            "args": [
+                "-c",
+                "exec npx -y chrome-devtools-mcp@latest --browser-url=http://127.0.0.1:9223 --no-usage-statistics --no-performance-crux 2>/dev/null"
+            ]
+        })
+    } else {
+        serde_json::json!({
+            "command": "npx",
+            "args": [
+                "-y",
+                "chrome-devtools-mcp@latest",
+                "--browser-url=http://127.0.0.1:9223"
+            ]
+        })
+    };
+
+    if quiet_mcp {
+        chrome_devtools_server["env"] = serde_json::json!({
+            "NPM_CONFIG_LOGLEVEL": "error",
+            "NPM_CONFIG_PROGRESS": "false",
+            "NPM_CONFIG_FUND": "false",
+            "NPM_CONFIG_AUDIT": "false",
+            "NPM_CONFIG_FUNDING": "0",
+            "NPM_CONFIG_UPDATE_NOTIFIER": "false",
+            "NO_COLOR": "1",
+            "CI": "1",
+            "NODE_NO_WARNINGS": "1"
+        });
+    }
+
     let config_content = serde_json::json!({
         "mcpServers": {
-            "chrome-devtools": {
-                "command": "npx",
-                "args": [
-                    "-y",
-                    "chrome-devtools-mcp@latest",
-                    "--browser-url=http://127.0.0.1:9223"
-                ]
-            }
+            "chrome-devtools": chrome_devtools_server
         }
     });
 
@@ -80,8 +106,22 @@ fn write_mcp_config() -> Result<String, String> {
 }
 
 fn start_chrome_if_needed(headless: bool, verbose: bool) -> Result<(), String> {
+    let mut profile_dir = home::home_dir().ok_or("Could not locate home directory")?;
+    profile_dir.push(".config/ask-chatgpt/chrome-profile");
+    std::fs::create_dir_all(&profile_dir)
+        .map_err(|e| format!("Failed to create chrome profile directory: {}", e))?;
+
+    let profile_path = profile_dir.to_string_lossy().to_string();
+
     if TcpStream::connect("127.0.0.1:9223").is_ok() {
-        return Ok(());
+        if !headless || is_debug_chrome_background(&profile_path) {
+            return Ok(());
+        }
+
+        if verbose {
+            println!("Found ask Chrome on port 9223 running visibly. Restarting in background...");
+        }
+        stop_ask_chrome_on_debug_port(&profile_path)?;
     }
 
     if verbose {
@@ -90,13 +130,6 @@ fn start_chrome_if_needed(headless: bool, verbose: bool) -> Result<(), String> {
             headless
         );
     }
-
-    let mut profile_dir = home::home_dir().ok_or("Could not locate home directory")?;
-    profile_dir.push(".config/ask-chatgpt/chrome-profile");
-    std::fs::create_dir_all(&profile_dir)
-        .map_err(|e| format!("Failed to create chrome profile directory: {}", e))?;
-
-    let profile_path = profile_dir.to_string_lossy().to_string();
 
     let chrome_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
     if !std::path::Path::new(chrome_path).exists() {
@@ -110,7 +143,10 @@ fn start_chrome_if_needed(headless: bool, verbose: bool) -> Result<(), String> {
         .arg("--no-default-browser-check");
 
     if headless {
-        cmd.arg("--headless=new");
+        cmd.arg("--ask-chatgpt-background")
+            .arg("--disable-blink-features=AutomationControlled")
+            .arg("--window-size=1440,1200")
+            .arg("--window-position=-10000,-10000");
     }
 
     cmd.stdout(std::process::Stdio::null())
@@ -130,6 +166,80 @@ fn start_chrome_if_needed(headless: bool, verbose: bool) -> Result<(), String> {
     }
 
     Err("Timed out waiting for Chrome to start on port 9223".to_string())
+}
+
+fn debug_port_listener_pids() -> Vec<String> {
+    let output = Command::new("lsof")
+        .args(["-tiTCP:9223", "-sTCP:LISTEN"])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn process_command(pid: &str) -> Option<String> {
+    let output = Command::new("ps")
+        .args(["-p", pid, "-o", "command="])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn is_debug_chrome_background(profile_path: &str) -> bool {
+    let profile_arg = format!("--user-data-dir={}", profile_path);
+
+    debug_port_listener_pids().iter().any(|pid| {
+        process_command(pid)
+            .map(|cmd| {
+                cmd.contains(&profile_arg)
+                    && (cmd.contains("--headless") || cmd.contains("--ask-chatgpt-background"))
+            })
+            .unwrap_or(false)
+    })
+}
+
+fn stop_ask_chrome_on_debug_port(profile_path: &str) -> Result<(), String> {
+    let profile_arg = format!("--user-data-dir={}", profile_path);
+    let ask_pids: Vec<String> = debug_port_listener_pids()
+        .into_iter()
+        .filter(|pid| {
+            process_command(pid)
+                .map(|cmd| cmd.contains(&profile_arg))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    if ask_pids.is_empty() {
+        return Err(
+            "Port 9223 is already used by a non-ask Chrome process. Stop it or use a different debugging port."
+                .to_string(),
+        );
+    }
+
+    for pid in ask_pids {
+        let _ = Command::new("kill").arg(&pid).status();
+    }
+
+    for _ in 0..50 {
+        if TcpStream::connect("127.0.0.1:9223").is_err() {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    Err("Timed out waiting for existing ask Chrome to stop".to_string())
 }
 
 fn call_mcp_tool(config_path: &str, tool: &str, args: Value) -> Result<Value, String> {
@@ -203,59 +313,91 @@ fn parse_script_result(val: &Value) -> Result<Value, String> {
     ))
 }
 
-fn get_incremental_stream_diff(old: &str, new: &str, is_terminal: bool) -> String {
-    if old.is_empty() {
-        return new.to_string();
+fn is_glow_available() -> bool {
+    Command::new("glow")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn read_clipboard() -> Result<String, String> {
+    let output = Command::new("pbpaste")
+        .output()
+        .map_err(|e| format!("Failed to run pbpaste: {}", e))?;
+
+    if !output.status.success() {
+        return Err(format!("pbpaste exited with status: {}", output.status));
     }
 
-    let old_lines: Vec<&str> = old.lines().collect();
-    let new_lines: Vec<&str> = new.lines().collect();
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
 
-    if new_lines.len() < old_lines.len() {
-        return "".to_string();
-    }
+fn click_latest_copy_button(config_path: &str) -> Result<(), String> {
+    let res = call_mcp_tool(
+        config_path,
+        "evaluate_script",
+        serde_json::json!({
+            "function": r#"() => {
+                const isVisible = (el) => {
+                    if (!el || el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+                    const style = window.getComputedStyle(el);
+                    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                    const rect = el.getBoundingClientRect();
+                    return rect.width > 0 && rect.height > 0;
+                };
 
-    let mut result = String::new();
+                const labelOf = (el) => [
+                    el.getAttribute('aria-label'),
+                    el.getAttribute('title'),
+                    el.getAttribute('data-testid'),
+                    el.textContent
+                ].filter(Boolean).join(' ');
 
-    // 1. Handle the last line of old_lines (which might be incomplete and still being appended to)
-    let last_old_idx = old_lines.len() - 1;
-    let old_last_line = old_lines[last_old_idx];
-    let new_last_line = new_lines[last_old_idx];
+                const isCopyButton = (el) => /copy|複製|复制|コピー|복사/i.test(labelOf(el));
+                const messages = Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
+                const latest = messages[messages.length - 1];
+                if (!latest) return { ok: false, reason: "No assistant message found" };
 
-    if new_last_line != old_last_line {
-        if is_terminal {
-            result.push_str(&format!("\r\x1b[K{}", new_last_line));
-        } else {
-            if new_last_line.starts_with(old_last_line) {
-                result.push_str(&new_last_line[old_last_line.len()..]);
-            } else {
-                // Find longest common prefix of old_last_line and new_last_line
-                let mut common_prefix_len = 0;
-                let old_chars = old_last_line.chars();
-                let mut new_chars = new_last_line.char_indices();
-                for old_c in old_chars {
-                    if let Some((idx, new_c)) = new_chars.next() {
-                        if old_c == new_c {
-                            common_prefix_len = idx + new_c.len_utf8();
-                        } else {
-                            break;
-                        }
-                    } else {
-                        break;
+                latest.scrollIntoView({ block: 'center', inline: 'nearest' });
+                for (const type of ['pointerover', 'mouseover', 'mouseenter']) {
+                    latest.dispatchEvent(new MouseEvent(type, { bubbles: true, view: window }));
+                }
+
+                const scopes = [
+                    latest,
+                    latest.closest('article'),
+                    latest.closest('[data-testid^="conversation-turn"]'),
+                    latest.parentElement,
+                    latest.parentElement?.parentElement,
+                    document
+                ].filter(Boolean);
+
+                for (const scope of scopes) {
+                    const buttons = Array.from(scope.querySelectorAll('button'));
+                    const button = buttons.find((btn) => isCopyButton(btn) && isVisible(btn));
+                    if (button) {
+                        button.click();
+                        return { ok: true, label: labelOf(button) };
                     }
                 }
-                result.push_str(&new_last_line[common_prefix_len..]);
-            }
-        }
-    }
 
-    // 2. Handle all brand-new lines
-    for i in old_lines.len()..new_lines.len() {
-        result.push('\n');
-        result.push_str(new_lines[i]);
-    }
+                return { ok: false, reason: "Copy response button not found" };
+            }"#
+        }),
+    )?;
 
-    result
+    let parsed = parse_script_result(&res)?;
+    if parsed["ok"].as_bool().unwrap_or(false) {
+        Ok(())
+    } else {
+        Err(parsed["reason"]
+            .as_str()
+            .unwrap_or("Failed to click copy response button")
+            .to_string())
+    }
 }
 
 fn ensure_chatgpt_tab(config_path: &str, force_new: bool, verbose: bool) -> Result<(), String> {
@@ -303,6 +445,51 @@ fn ensure_chatgpt_tab(config_path: &str, force_new: bool, verbose: bool) -> Resu
                     "pageId": id
                 }),
             );
+        }
+
+        let refreshed_pages_res = call_mcp_tool(config_path, "list_pages", serde_json::json!({}))?;
+        let refreshed_text = refreshed_pages_res
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|obj| obj.get("text"))
+            .and_then(|t| t.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "Invalid refreshed list_pages response structure: {:?}",
+                    refreshed_pages_res
+                )
+            })?;
+        let refreshed_pages = parse_pages(refreshed_text);
+
+        if let Some(page) = refreshed_pages
+            .iter()
+            .find(|p| p.url.contains("chatgpt.com"))
+        {
+            if verbose {
+                println!("Selecting new ChatGPT tab (ID: {})...", page.id);
+            }
+            call_mcp_tool(
+                config_path,
+                "select_page",
+                serde_json::json!({
+                    "pageId": page.id,
+                    "bringToFront": true
+                }),
+            )?;
+
+            for stale_page in refreshed_pages.iter().filter(|p| p.id != page.id) {
+                if verbose {
+                    println!("Closing non-ChatGPT tab (ID: {})...", stale_page.id);
+                }
+                let _ = call_mcp_tool(
+                    config_path,
+                    "close_page",
+                    serde_json::json!({
+                        "pageId": stale_page.id
+                    }),
+                );
+            }
         }
     } else {
         // Find any existing chatgpt page
@@ -365,14 +552,50 @@ fn ensure_chatgpt_tab(config_path: &str, force_new: bool, verbose: bool) -> Resu
     if verbose {
         println!("Waiting for ChatGPT to load...");
     }
-    for _ in 0..30 {
+    for attempt in 0..90 {
+        if attempt > 0 && attempt % 10 == 0 {
+            if let Ok(list_res) = call_mcp_tool(config_path, "list_pages", serde_json::json!({})) {
+                if let Some(text) = list_res
+                    .get("content")
+                    .and_then(|c| c.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|obj| obj.get("text"))
+                    .and_then(|t| t.as_str())
+                {
+                    if let Some(page) = parse_pages(text)
+                        .iter()
+                        .find(|p| p.url.contains("chatgpt.com"))
+                    {
+                        let _ = call_mcp_tool(
+                            config_path,
+                            "select_page",
+                            serde_json::json!({
+                                "pageId": page.id,
+                                "bringToFront": true
+                            }),
+                        );
+                    }
+                }
+            }
+        }
+
         let ready_res = call_mcp_tool(
             config_path,
             "evaluate_script",
             serde_json::json!({
                 "function": "() => document.getElementById('prompt-textarea') !== null"
             }),
-        )?;
+        );
+        let ready_res = match ready_res {
+            Ok(res) => res,
+            Err(e) => {
+                if verbose {
+                    eprintln!("Warning: Failed to check ChatGPT readiness: {}", e);
+                }
+                thread::sleep(Duration::from_millis(500));
+                continue;
+            }
+        };
         if let Ok(parsed) = parse_script_result(&ready_res) {
             let is_ready = parsed.as_bool().unwrap_or(false);
             if is_ready {
@@ -401,186 +624,26 @@ fn check_login_status(config_path: &str) -> Result<bool, String> {
     }
 }
 
-const HTML_TO_MARKDOWN_JS: &str = r##"
-const htmlToMarkdown = (node, isTerminal) => {
-    if (!node) return "";
-    if (node.nodeType === Node.TEXT_NODE) {
-        return node.nodeValue;
-    }
-    if (node.nodeType !== Node.ELEMENT_NODE) {
-        return "";
-    }
-
-    const selectorsToSkip = [
-        '[data-testid="reasoning-block"]',
-        '[data-testid="reasoning-duration"]',
-        '[data-testid="conversation-turn-reasoning"]',
-        '[data-testid="reasoning-instructions"]',
-        '[aria-label*="thinking" i]',
-        '[aria-label*="thought" i]',
-        '.reasoning-block',
-        '.thought-process',
-        '.thinking-process',
-        '[data-testid="webpage-citation-pill"]'
-    ];
-    if (selectorsToSkip.some(sel => node.matches(sel))) {
-        return "";
-    }
-    
-    const text = node.textContent || "";
-    if (/正在思考|已思考|Thinking|Thought|思考/i.test(text)) {
-        if (node.tagName === 'BUTTON' || node.tagName === 'SUMMARY' || node.getAttribute('aria-expanded') !== null || text.length < 100) {
-            return "";
-        }
-    }
-
-    const tagName = node.tagName.toUpperCase();
-
-    if (tagName === 'PRE') {
-        const codeEl = node.querySelector('code');
-        const codeText = codeEl ? codeEl.textContent : node.textContent;
-        let lang = "";
-        if (codeEl) {
-            const classes = Array.from(codeEl.classList);
-            const langClass = classes.find(c => c.startsWith('language-'));
-            if (langClass) {
-                lang = langClass.replace('language-', '');
-            }
-        }
-        return `\n\n\`\`\`${lang}\n${codeText.trim()}\n\`\`\`\n\n`;
-    }
-
-    if (tagName === 'CODE') {
-        return `\`${node.textContent}\``;
-    }
-
-    if (tagName === 'A') {
-        let href = node.getAttribute('href');
-        const childText = Array.from(node.childNodes).map(c => htmlToMarkdown(c, isTerminal)).join("").trim();
-        
-        if (!href || href.startsWith('javascript:')) {
-            // Check if childText looks like a GitHub repo (owner/repo)
-            if (/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(childText)) {
-                href = `https://github.com/${childText}`;
-            }
-        }
-        
-        if (href && !href.startsWith('javascript:')) {
-            if (isTerminal) {
-                return `\u001b]8;;${href}\u001b\\\u001b[4;36m${childText}\u001b[0m\u001b]8;;\u001b\\`;
-            } else {
-                return `[${childText}](${href})`;
-            }
-        } else {
-            return childText;
-        }
-    }
-
-    if (tagName === 'IMG') {
-        const src = node.getAttribute('src');
-        if (src) {
-            const alt = node.getAttribute('alt') || "";
-            if (isTerminal) {
-                return `📷 \u001b]8;;${src}\u001b\\\u001b[4;36m[Image: ${alt}]\u001b[0m\u001b]8;;\u001b\\`;
-            } else {
-                return `![${alt}](${src})`;
-            }
-        }
-    }
-
-    if (tagName === 'HR') {
-        return `\n\n---\n\n`;
-    }
-
-    if (tagName === 'TABLE') {
-        let mdTable = "\n\n";
-        const rows = Array.from(node.querySelectorAll('tr'));
-        let hasHeader = false;
-        
-        rows.forEach((tr, index) => {
-            const cells = Array.from(tr.querySelectorAll('th, td'));
-            const cellTexts = cells.map(cell => {
-                return Array.from(cell.childNodes)
-                    .map(c => htmlToMarkdown(c, isTerminal))
-                    .join("")
-                    .replace(/\r?\n/g, " ")
-                    .replace(/\|/g, "\\|")
-                    .trim();
-            });
-            
-            if (cellTexts.length > 0) {
-                mdTable += `| ${cellTexts.join(" | ")} |\n`;
-                
-                const isHeaderRow = tr.querySelector('th') !== null || index === 0;
-                if (isHeaderRow && !hasHeader) {
-                    const separators = cellTexts.map(() => "---");
-                    mdTable += `| ${separators.join(" | ")} |\n`;
-                    hasHeader = true;
-                }
-            }
-        });
-        return mdTable + "\n";
-    }
-
-    const childrenMarkdown = Array.from(node.childNodes)
-        .map(c => htmlToMarkdown(c, isTerminal))
-        .join("");
-
-    if (tagName === 'P') {
-        return `\n\n${childrenMarkdown.trim()}\n\n`;
-    }
-    if (tagName === 'BR') {
-        return `\n`;
-    }
-    if (tagName === 'STRONG' || tagName === 'B') {
-        if (isTerminal) {
-            return `\u001b[1m${childrenMarkdown}\u001b[0m`;
-        }
-        return `**${childrenMarkdown}**`;
-    }
-    if (tagName === 'EM' || tagName === 'I') {
-        return `*${childrenMarkdown}*`;
-    }
-    if (tagName === 'DEL' || tagName === 'S' || tagName === 'STRIKE') {
-        return `~~${childrenMarkdown}~~`;
-    }
-    if (tagName === 'LI') {
-        let depth = 0;
-        let p = node.parentNode;
-        while (p) {
-            const pTag = p.tagName ? p.tagName.toUpperCase() : "";
-            if (pTag === 'UL' || pTag === 'OL') {
-                depth++;
-            }
-            p = p.parentNode;
-        }
-        const indent = "  ".repeat(Math.max(0, depth - 1));
-        
-        const parent = node.parentNode;
-        if (parent && parent.tagName.toUpperCase() === 'OL') {
-            const siblings = Array.from(parent.children);
-            const index = siblings.indexOf(node) + 1;
-            return `\n${indent}${index}. ${childrenMarkdown.trim()}`;
-        }
-        return `\n${indent}- ${childrenMarkdown.trim()}`;
-    }
-    if (/^H[1-6]$/.test(tagName)) {
-        const level = parseInt(tagName.charAt(1));
-        const hashes = "#".repeat(level);
-        return `\n\n${hashes} ${childrenMarkdown.trim()}\n\n`;
-    }
-    if (tagName === 'BLOCKQUOTE') {
-        return `\n\n> ${childrenMarkdown.trim().replace(/\n/g, "\n> ")}\n\n`;
-    }
-
-    return childrenMarkdown;
-};
-"##;
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    if !cli.verbose {
+        // SAFETY: Called before spawning other threads and before loading MCP config.
+        unsafe {
+            std::env::remove_var("MCP_DEBUG");
+        }
+    }
+    if std::env::var("MCP_TIMEOUT").is_err() {
+        // SAFETY: Called before spawning other threads and before loading MCP config.
+        unsafe {
+            std::env::set_var("MCP_TIMEOUT", "20");
+        }
+    }
 
-    let config_path = match write_mcp_config() {
+    let is_terminal = io::stdout().is_terminal();
+    let use_glow = is_terminal && is_glow_available();
+    let mut glow_rendered = false;
+
+    let config_path = match write_mcp_config(!cli.verbose) {
         Ok(path) => path,
         Err(e) => {
             eprintln!("Error: {}", e);
@@ -678,8 +741,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => {}
     }
 
-    let is_terminal = io::stdout().is_terminal();
-
     // Get initial number of assistant messages before submitting the prompt
     let count_res = call_mcp_tool(
         &config_path,
@@ -732,90 +793,77 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Waiting for ChatGPT response...");
     }
 
-    let mut last_terminal = String::new();
     let mut last_markdown = String::new();
     let mut finished = false;
     let mut wait_cycles = 0;
+    let mut stable_done_checks = 0;
     let spinner_frames = vec!["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     let mut spinner_idx = 0;
-    let mut is_thinking = true;
 
     while !finished && wait_cycles < 1200 {
         // Max 120 seconds (1200 * 100ms)
-        if is_thinking && is_terminal {
+        if is_terminal {
             let frame = spinner_frames[spinner_idx % spinner_frames.len()];
-            print!("\r\x1b[1;36m{}\x1b[0m 正在思考中 🧠...", frame);
+            print!("\r\x1b[1;36m{}\x1b[0m 正在等待 ChatGPT 回應...", frame);
             io::stdout().flush()?;
             spinner_idx += 1;
         }
 
         if wait_cycles % 5 == 0 {
-            let check_res = call_mcp_tool(
+            let check_res = match call_mcp_tool(
                 &config_path,
                 "evaluate_script",
                 serde_json::json!({
                     "function": format!(r#"() => {{
-                    {html_to_markdown_js}
                     const stopButton = document.querySelector('[data-testid="stop-button"]') || 
                                        document.getElementById('composer-stop-button') ||
                                        document.querySelector('button[aria-label="Stop generating"]');
-                    
-                    const getParsedText = () => {{
-                        const messages = document.querySelectorAll('[data-message-author-role="assistant"]');
-                        if (messages.length <= {initial_assistant_count}) return {{ terminal: "", markdown: "" }};
-                        const latestMessage = messages[{initial_assistant_count}];
-                        
-                        const clone = latestMessage.cloneNode(true);
-                        const targetContainer = clone.querySelector('.markdown') || clone;
-                        
-                        const terminalText = htmlToMarkdown(targetContainer, {is_terminal}).replace(/\n{{3,}}/g, "\n\n").trim();
-                        const markdownText = htmlToMarkdown(targetContainer, false).replace(/\n{{3,}}/g, "\n\n").trim();
-                        
-                        return {{ terminal: terminalText, markdown: markdownText }};
+
+                    const isVisible = (el) => {{
+                        if (!el || el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+                        const style = window.getComputedStyle(el);
+                        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                        const rect = el.getBoundingClientRect();
+                        return rect.width > 0 && rect.height > 0;
                     }};
                     
-                    const res = getParsedText();
-                    const isNew = (res.markdown.trim().length > 0);
+                    const messages = document.querySelectorAll('[data-message-author-role="assistant"]');
+                    const isNew = messages.length > {initial_assistant_count};
                     
-                    if (stopButton) {{
-                        return {{ status: "generating", text: res, isNew: isNew }};
+                    if (isVisible(stopButton)) {{
+                        return {{ status: "generating", isNew: isNew }};
                     }}
                     
                     if (isNew) {{
-                        return {{ status: "done", text: res, isNew: isNew }};
+                        return {{ status: "done", isNew: isNew }};
                     }}
                     
-                    return {{ status: "waiting", text: res, isNew: isNew }};
-                }}"#, html_to_markdown_js = HTML_TO_MARKDOWN_JS, is_terminal = is_terminal, initial_assistant_count = initial_assistant_count)
+                    return {{ status: "waiting", isNew: isNew }};
+                }}"#, initial_assistant_count = initial_assistant_count)
                 }),
-            )?;
+            ) {
+                Ok(res) => res,
+                Err(e) => {
+                    if cli.verbose {
+                        eprintln!("Warning: Failed to poll ChatGPT response: {}", e);
+                    }
+                    thread::sleep(Duration::from_millis(100));
+                    wait_cycles += 1;
+                    continue;
+                }
+            };
 
             if let Ok(parsed) = parse_script_result(&check_res) {
                 let status = parsed["status"].as_str().unwrap_or("waiting");
-                let text_val = &parsed["text"];
-                let terminal_text = text_val["terminal"].as_str().unwrap_or("");
-                let markdown_text = text_val["markdown"].as_str().unwrap_or("");
                 let is_new = parsed["isNew"].as_bool().unwrap_or(false);
 
-                if is_new && !terminal_text.is_empty() && terminal_text != last_terminal {
-                    if is_thinking {
-                        if is_terminal {
-                            print!("\r\x1b[K");
-                            io::stdout().flush()?;
-                        }
-                        is_thinking = false;
+                if status == "done" && is_new {
+                    stable_done_checks += 1;
+                    if stable_done_checks >= 3 {
+                        finished = true;
                     }
-
-                    let delta =
-                        get_incremental_stream_diff(&last_terminal, terminal_text, is_terminal);
-                    print!("{}", delta);
-                    io::stdout().flush()?;
-                    last_terminal = terminal_text.to_string();
-                    last_markdown = markdown_text.to_string();
-                }
-
-                if status == "done" {
-                    finished = true;
+                } else {
+                    stable_done_checks = 0;
                 }
             }
         }
@@ -824,15 +872,77 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         wait_cycles += 1;
     }
 
-    if is_thinking && is_terminal {
+    if is_terminal {
         print!("\r\x1b[K");
         io::stdout().flush()?;
     }
 
-    println!(); // Print final newline
-
     if !finished {
         eprintln!("\nWarning: Output stream did not complete within the timeout period.");
+    }
+
+    if finished {
+        if cli.verbose {
+            println!("Copying final response from ChatGPT toolbar...");
+        }
+        let clipboard_before = read_clipboard().unwrap_or_default();
+        match click_latest_copy_button(&config_path) {
+            Ok(()) => {
+                for _ in 0..20 {
+                    thread::sleep(Duration::from_millis(100));
+                    match read_clipboard() {
+                        Ok(content)
+                            if !content.trim().is_empty() && content != clipboard_before =>
+                        {
+                            last_markdown = content;
+                            break;
+                        }
+                        Ok(content) if !content.trim().is_empty() && last_markdown.is_empty() => {
+                            last_markdown = content;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Error copying response from ChatGPT toolbar: {}", e);
+            }
+        }
+    }
+
+    if use_glow && !last_markdown.is_empty() {
+        let glow = Command::new("glow")
+            .arg("-")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn();
+
+        if let Ok(mut child) = glow {
+            if let Some(mut stdin) = child.stdin.take() {
+                if let Err(e) = stdin.write_all(last_markdown.as_bytes()) {
+                    eprintln!("Failed to send Markdown content to glow: {}", e);
+                }
+            }
+
+            match child.wait() {
+                Ok(status) if status.success() => {
+                    glow_rendered = true;
+                }
+                Ok(status) => {
+                    eprintln!("glow exited with status: {}", status);
+                }
+                Err(e) => {
+                    eprintln!("Failed to wait for glow process: {}", e);
+                }
+            }
+        }
+    }
+
+    if is_terminal && !glow_rendered {
+        print!("{}", last_markdown);
+    } else if !is_terminal {
+        print!("{}", last_markdown);
     }
 
     // Print the URL link of the current conversation thread
