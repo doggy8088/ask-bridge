@@ -693,7 +693,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as usize;
 
-
     if cli.verbose {
         println!("Focusing input field...");
     }
@@ -807,7 +806,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         is_thinking = false;
                     }
 
-                    let delta = get_incremental_stream_diff(&last_terminal, terminal_text, is_terminal);
+                    let delta =
+                        get_incremental_stream_diff(&last_terminal, terminal_text, is_terminal);
                     print!("{}", delta);
                     io::stdout().flush()?;
                     last_terminal = terminal_text.to_string();

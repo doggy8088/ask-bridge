@@ -1,0 +1,32 @@
+{
+  "name": "ask-chatgpt",
+  "version": "0.1.0",
+  "description": "Automate ChatGPT from the command line through Chrome.",
+  "bin": {
+    "ask": "npm/cli.cjs"
+  },
+  "scripts": {
+    "postinstall": "node npm/postinstall.cjs",
+    "test": "node --test tests/postinstall.test.cjs",
+    "prepublishOnly": "npm test && npm pack --dry-run && node npm/prepublish-check.cjs"
+  },
+  "files": [
+    "npm/cli.cjs",
+    "npm/postinstall.cjs",
+    "npm/prepublish-check.cjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/REPLACE_ME/ask-chatgpt.git"
+  },
+  "keywords": [
+    "chatgpt",
+    "chrome",
+    "rust",
+    "cli"
+  ],
+  "author": "",
+  "license": "MIT"
+}
