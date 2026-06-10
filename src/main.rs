@@ -63,7 +63,10 @@ fn write_mcp_config(quiet_mcp: bool, headless: bool) -> Result<String, String> {
     std::fs::create_dir_all(&config_dir)
         .map_err(|e| format!("Failed to create config directory: {}", e))?;
 
-    let log_path = config_dir.join("chrome-devtools-mcp.log").to_string_lossy().to_string();
+    let log_path = config_dir
+        .join("chrome-devtools-mcp.log")
+        .to_string_lossy()
+        .to_string();
 
     config_dir.push("mcp_servers.json");
     let config_path = config_dir.to_string_lossy().to_string();
@@ -151,10 +154,7 @@ fn start_chrome_if_needed(headless: bool, verbose: bool) -> Result<(), String> {
                                 "tell application \"System Events\" to set visible of first application process whose unix id is {} to false",
                                 pid
                             );
-                            let _ = Command::new("osascript")
-                                .arg("-e")
-                                .arg(&script)
-                                .status();
+                            let _ = Command::new("osascript").arg("-e").arg(&script).status();
                         }
                     }
                 });
@@ -193,7 +193,8 @@ fn start_chrome_if_needed(headless: bool, verbose: bool) -> Result<(), String> {
             .arg("--window-position=-2000,-2000");
     }
 
-    let child = cmd.stdout(std::process::Stdio::null())
+    let child = cmd
+        .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|e| format!("Failed to start Google Chrome: {}", e))?;
@@ -207,10 +208,7 @@ fn start_chrome_if_needed(headless: bool, verbose: bool) -> Result<(), String> {
                     "tell application \"System Events\" to try\nset visible of first application process whose unix id is {} to false\nend try",
                     pid
                 );
-                let _ = Command::new("osascript")
-                    .arg("-e")
-                    .arg(&script)
-                    .status();
+                let _ = Command::new("osascript").arg("-e").arg(&script).status();
                 thread::sleep(Duration::from_millis(50));
             }
         });
@@ -264,10 +262,7 @@ fn is_debug_chrome_background(profile_path: &str) -> bool {
 
     debug_port_listener_pids().iter().any(|pid| {
         process_command(pid)
-            .map(|cmd| {
-                cmd.contains(&profile_arg)
-                    && cmd.contains("--ask-chatgpt-background")
-            })
+            .map(|cmd| cmd.contains(&profile_arg) && cmd.contains("--ask-chatgpt-background"))
             .unwrap_or(false)
     })
 }
@@ -700,9 +695,8 @@ fn copy_latest_markdown(config_path: &str) -> Result<String, String> {
     // Always restore the original clipboard
     let _ = write_clipboard(&clipboard_before);
 
-    let content = copied_content.ok_or_else(|| {
-        "Timed out waiting for clipboard content after clicking copy".to_string()
-    })?;
+    let content = copied_content
+        .ok_or_else(|| "Timed out waiting for clipboard content after clicking copy".to_string())?;
 
     // Create a temporary file path
     let temp_path = std::env::temp_dir().join(format!("ask_chatgpt_{}.md", std::process::id()));
@@ -721,7 +715,12 @@ fn copy_latest_markdown(config_path: &str) -> Result<String, String> {
     Ok(verified_content)
 }
 
-fn ensure_chatgpt_tab(config_path: &str, force_new: bool, headless: bool, verbose: bool) -> Result<(), String> {
+fn ensure_chatgpt_tab(
+    config_path: &str,
+    force_new: bool,
+    headless: bool,
+    verbose: bool,
+) -> Result<(), String> {
     if verbose {
         println!("Checking open Chrome tabs...");
     }
@@ -1009,7 +1008,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 } else {
-                    if let Err(e) = ensure_chatgpt_tab(&config_path, false, is_headless, cli.verbose) {
+                    if let Err(e) =
+                        ensure_chatgpt_tab(&config_path, false, is_headless, cli.verbose)
+                    {
                         eprintln!("Error ensuring ChatGPT tab: {}", e);
                         std::process::exit(1);
                     }
@@ -1024,7 +1025,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         std::process::exit(1);
                     }
                 } else {
-                    if let Err(e) = ensure_chatgpt_tab(&config_path, false, is_headless, cli.verbose) {
+                    if let Err(e) =
+                        ensure_chatgpt_tab(&config_path, false, is_headless, cli.verbose)
+                    {
                         eprintln!("Error ensuring ChatGPT tab: {}", e);
                         std::process::exit(1);
                     }
