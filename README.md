@@ -159,6 +159,7 @@ ask open
 ## 相關文件
 
 - [快速開始](docs/quick-start.md)
+- [背景 Chrome 隱形技術與實作原理](docs/headless-techniques.md)
 - [English README](README.en.md)
 
 ## 授權

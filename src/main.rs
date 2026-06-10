@@ -141,6 +141,24 @@ fn start_chrome_if_needed(headless: bool, verbose: bool) -> Result<(), String> {
 
     if TcpStream::connect("127.0.0.1:9223").is_ok() {
         if !headless || is_debug_chrome_background(&profile_path) {
+            if headless {
+                // Force hide any existing background Chrome PIDs asynchronously just in case they are currently visible
+                let pids = debug_port_listener_pids();
+                thread::spawn(move || {
+                    for pid_str in pids {
+                        if let Ok(pid) = pid_str.parse::<u32>() {
+                            let script = format!(
+                                "tell application \"System Events\" to set visible of first application process whose unix id is {} to false",
+                                pid
+                            );
+                            let _ = Command::new("osascript")
+                                .arg("-e")
+                                .arg(&script)
+                                .status();
+                        }
+                    }
+                });
+            }
             return Ok(());
         }
 
@@ -175,10 +193,28 @@ fn start_chrome_if_needed(headless: bool, verbose: bool) -> Result<(), String> {
             .arg("--window-position=-2000,-2000");
     }
 
-    cmd.stdout(std::process::Stdio::null())
+    let child = cmd.stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|e| format!("Failed to start Google Chrome: {}", e))?;
+
+    if headless {
+        let pid = child.id();
+        thread::spawn(move || {
+            // Rapidly set visibility to false during startup to prevent window from flashing or drawing
+            for _ in 0..40 {
+                let script = format!(
+                    "tell application \"System Events\" to try\nset visible of first application process whose unix id is {} to false\nend try",
+                    pid
+                );
+                let _ = Command::new("osascript")
+                    .arg("-e")
+                    .arg(&script)
+                    .status();
+                thread::sleep(Duration::from_millis(50));
+            }
+        });
+    }
 
     // Wait for Chrome to listen on port 9223
     for _ in 0..50 {
@@ -541,7 +577,7 @@ fn wait_for_page_load(config_path: &str, verbose: bool) -> Result<(), String> {
     Err("Timeout waiting for page to load".to_string())
 }
 
-fn open_url_tab(config_path: &str, url: &str, verbose: bool) -> Result<(), String> {
+fn open_url_tab(config_path: &str, url: &str, headless: bool, verbose: bool) -> Result<(), String> {
     if verbose {
         println!("Opening URL: {}", url);
     }
@@ -600,7 +636,7 @@ fn open_url_tab(config_path: &str, url: &str, verbose: bool) -> Result<(), Strin
                 "select_page",
                 serde_json::json!({
                     "pageId": page.id,
-                    "bringToFront": true
+                    "bringToFront": !headless
                 }),
             )?;
 
@@ -685,7 +721,7 @@ fn copy_latest_markdown(config_path: &str) -> Result<String, String> {
     Ok(verified_content)
 }
 
-fn ensure_chatgpt_tab(config_path: &str, force_new: bool, verbose: bool) -> Result<(), String> {
+fn ensure_chatgpt_tab(config_path: &str, force_new: bool, headless: bool, verbose: bool) -> Result<(), String> {
     if verbose {
         println!("Checking open Chrome tabs...");
     }
@@ -759,7 +795,7 @@ fn ensure_chatgpt_tab(config_path: &str, force_new: bool, verbose: bool) -> Resu
                 "select_page",
                 serde_json::json!({
                     "pageId": page.id,
-                    "bringToFront": true
+                    "bringToFront": !headless
                 }),
             )?;
 
@@ -795,7 +831,7 @@ fn ensure_chatgpt_tab(config_path: &str, force_new: bool, verbose: bool) -> Resu
                         "select_page",
                         serde_json::json!({
                             "pageId": page.id,
-                            "bringToFront": true
+                            "bringToFront": !headless
                         }),
                     )?;
                 }
@@ -856,7 +892,7 @@ fn ensure_chatgpt_tab(config_path: &str, force_new: bool, verbose: bool) -> Resu
                             "select_page",
                             serde_json::json!({
                                 "pageId": page.id,
-                                "bringToFront": true
+                                "bringToFront": !headless
                             }),
                         );
                     }
@@ -949,7 +985,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match command {
             Commands::Open { url } => {
                 if let Some(url) = url {
-                    if let Err(e) = open_url_tab(&config_path, &url, cli.verbose) {
+                    if let Err(e) = open_url_tab(&config_path, &url, is_headless, cli.verbose) {
                         eprintln!("Error opening URL: {}", e);
                         std::process::exit(1);
                     }
@@ -973,7 +1009,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 } else {
-                    if let Err(e) = ensure_chatgpt_tab(&config_path, false, cli.verbose) {
+                    if let Err(e) = ensure_chatgpt_tab(&config_path, false, is_headless, cli.verbose) {
                         eprintln!("Error ensuring ChatGPT tab: {}", e);
                         std::process::exit(1);
                     }
@@ -983,12 +1019,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Commands::Get { url } => {
                 if let Some(url) = url {
-                    if let Err(e) = open_url_tab(&config_path, &url, cli.verbose) {
+                    if let Err(e) = open_url_tab(&config_path, &url, is_headless, cli.verbose) {
                         eprintln!("Error opening URL: {}", e);
                         std::process::exit(1);
                     }
                 } else {
-                    if let Err(e) = ensure_chatgpt_tab(&config_path, false, cli.verbose) {
+                    if let Err(e) = ensure_chatgpt_tab(&config_path, false, is_headless, cli.verbose) {
                         eprintln!("Error ensuring ChatGPT tab: {}", e);
                         std::process::exit(1);
                     }
@@ -1015,7 +1051,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
             Commands::Login => {
-                if let Err(e) = ensure_chatgpt_tab(&config_path, false, cli.verbose) {
+                if let Err(e) = ensure_chatgpt_tab(&config_path, false, is_headless, cli.verbose) {
                     eprintln!("Error ensuring ChatGPT tab: {}", e);
                     std::process::exit(1);
                 }
@@ -1060,7 +1096,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(0);
     }
 
-    if let Err(e) = ensure_chatgpt_tab(&config_path, cli.new, cli.verbose) {
+    if let Err(e) = ensure_chatgpt_tab(&config_path, cli.new, is_headless, cli.verbose) {
         eprintln!("Error ensuring ChatGPT tab: {}", e);
         std::process::exit(1);
     }
