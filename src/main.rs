@@ -32,6 +32,10 @@ struct Cli {
     #[arg(long, short, value_name = "FILE")]
     output: Option<String>,
 
+    /// Write the downloaded images to the specified folder or file path.
+    #[arg(long, short = 'i', value_name = "IMAGE_PATH")]
+    image_output: Option<String>,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -887,7 +891,11 @@ fn scrape_latest_markdown_from_dom(config_path: &str) -> Result<String, String> 
     Ok(content)
 }
 
-fn download_images_from_latest_message(config_path: &str, verbose: bool) -> Result<(), String> {
+fn download_images_from_latest_message(
+    config_path: &str,
+    image_output: Option<&str>,
+    verbose: bool,
+) -> Result<(), String> {
     if verbose {
         println!("Checking for generated images in the latest assistant response...");
     }
@@ -1039,9 +1047,7 @@ fn download_images_from_latest_message(config_path: &str, verbose: bool) -> Resu
         .unwrap_or_default()
         .as_secs();
 
-    std::fs::create_dir_all("target")
-        .map_err(|e| format!("Failed to create target/ directory: {}", e))?;
-
+    let total = images.len();
     for (idx, img) in images.iter().enumerate() {
         let data_url = match img["dataUrl"].as_str() {
             Some(s) => s,
@@ -1070,11 +1076,49 @@ fn download_images_from_latest_message(config_path: &str, verbose: bool) -> Resu
             .decode(base64_data)
             .map_err(|e| format!("Failed to decode base64 data: {}", e))?;
 
-        let file_name = format!("target/generated_{}_{}.{}", epoch, idx, ext);
-        std::fs::write(&file_name, decoded)
-            .map_err(|e| format!("Failed to write image file {}: {}", file_name, e))?;
+        let file_path = match image_output {
+            Some(output_str) => {
+                let path = std::path::Path::new(output_str);
+                let is_dir = path.is_dir()
+                    || output_str.ends_with('/')
+                    || output_str.ends_with('\\')
+                    || path.extension().is_none();
 
-        println!("📥 Downloaded and saved generated image to: {}", file_name);
+                if is_dir {
+                    std::fs::create_dir_all(path)
+                        .map_err(|e| format!("Failed to create directory {:?}: {}", path, e))?;
+                    path.join(format!("generated_{}_{}.{}", epoch, idx, ext))
+                } else {
+                    let parent = path.parent().unwrap_or_else(|| std::path::Path::new(""));
+                    if !parent.as_os_str().is_empty() {
+                        std::fs::create_dir_all(parent)
+                            .map_err(|e| format!("Failed to create parent directory {:?}: {}", parent, e))?;
+                    }
+                    let file_stem = path.file_stem()
+                        .and_then(|s| s.to_str())
+                        .ok_or_else(|| "Invalid file name".to_string())?;
+                    let file_ext = path.extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or(ext);
+                    
+                    if total <= 1 {
+                        parent.join(format!("{}.{}", file_stem, file_ext))
+                    } else {
+                        parent.join(format!("{}_{}.{}", file_stem, idx + 1, file_ext))
+                    }
+                }
+            }
+            None => {
+                std::fs::create_dir_all("target")
+                    .map_err(|e| format!("Failed to create target/ directory: {}", e))?;
+                std::path::PathBuf::from(format!("target/generated_{}_{}.{}", epoch, idx, ext))
+            }
+        };
+
+        std::fs::write(&file_path, decoded)
+            .map_err(|e| format!("Failed to write image file {:?}: {}", file_path, e))?;
+
+        println!("📥 Downloaded and saved generated image to: {}", file_path.to_string_lossy());
     }
 
     Ok(())
@@ -1355,7 +1399,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 std::process::exit(1);
                             }
                             if let Err(e) =
-                                download_images_from_latest_message(&config_path, cli.verbose)
+                                download_images_from_latest_message(&config_path, cli.image_output.as_deref(), cli.verbose)
                             {
                                 eprintln!("Error downloading images: {}", e);
                             }
@@ -1404,7 +1448,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             std::process::exit(1);
                         }
                         if let Err(e) =
-                            download_images_from_latest_message(&config_path, cli.verbose)
+                            download_images_from_latest_message(&config_path, cli.image_output.as_deref(), cli.verbose)
                         {
                             eprintln!("Error downloading images: {}", e);
                         }
@@ -1833,7 +1877,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if finished {
-        let _ = download_images_from_latest_message(&config_path, cli.verbose).map_err(|e| {
+        let _ = download_images_from_latest_message(&config_path, cli.image_output.as_deref(), cli.verbose).map_err(|e| {
             eprintln!("Error downloading images: {}", e);
         });
     }
