@@ -17,7 +17,8 @@
 - **思考動畫**：等待 ChatGPT 回覆時，在終端機顯示旋轉 spinner，開始輸出內容後自動清除。
 - **智慧分頁管理**：可重用既有 ChatGPT 分頁、聚焦分頁，或開啟新分頁，避免分頁過度增加。
 - **Pipe 與 stdin 支援**：支援透過 standard input 傳入 prompt，例如 `cat report.txt | ask "summarize this"`。
-- **預設安靜模式與 verbose 模式**：預設只輸出最終回覆；加上 `--verbose` 或 `-v` 可顯示背景瀏覽器控制流程。
+- **預設安靜模式與 verbose 模式**：預設只輸出最終回覆；加上 `--verbose` 可顯示背景瀏覽器控制流程。
+- **版本資訊**：使用 `-v` 或 `--version` 顯示目前版本號。
 
 ## 前置需求
 
@@ -113,7 +114,7 @@ ask "誰是保哥？" --headless=false
 
 預設情況下，`ask` 只輸出 ChatGPT 的最終回覆，隱藏背景控制訊息。
 
-若要查看完整瀏覽器自動化流程，加入 `--verbose` 或 `-v`：
+若要查看完整瀏覽器自動化流程，加入 `--verbose`：
 
 ```bash
 ask "誰是保哥？" --verbose
@@ -127,7 +128,15 @@ Verbose 模式會顯示類似以下流程：
 - 送出訊息。
 - 等待 ChatGPT 回覆。
 
-### 6. Pipe 與 stdin
+### 6. 顯示版本
+
+使用 `-v` 或 `--version` 顯示目前版本號：
+
+```bash
+ask -v
+```
+
+### 7. Pipe 與 stdin
 
 可透過 pipe 將文字或檔案內容傳入 `ask`：
 
@@ -141,7 +150,7 @@ echo "用一句話解釋 quantum computing" | ask
 cat src/main.rs | ask "這段 Rust code 有記憶體洩漏風險嗎？"
 ```
 
-### 7. 只開啟 ChatGPT
+### 8. 只開啟 ChatGPT
 
 若只想快速開啟瀏覽器並進入 ChatGPT：
 

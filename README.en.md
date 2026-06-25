@@ -18,7 +18,8 @@ Unlike typical API clients, `ask` operates inside a real, headful Chrome browser
 - **🌀 TUI Thinking Animation**: Displays a gorgeous, fluid rotating braille spinner (`⠋ 正在思考中 🧠...`) while waiting for ChatGPT to think and reply, which clears automatically the instant the streaming response starts.
 - **🧠 Intelligent Tab Management**: Reuses existing ChatGPT tabs if open, focuses them, or opens new ones, avoiding tab clutter.
 - **🖥️ Pipe & Stdin Support**: Supports piping prompts via `stdin` (e.g. `cat report.txt | ask "summarize this"`).
-- **🔍 Quiet by Default & Verbose Mode**: Quiet and clean output by default (displaying only the generated response), with an optional `--verbose` (`-v`) flag to display full browser state logs if needed.
+- **🔍 Quiet by Default & Verbose Mode**: Quiet and clean output by default (displaying only the generated response), with an optional `--verbose` flag to display full browser state logs if needed.
+- **Version Info**: Use `-v` or `--version` to print the current version number.
 
 ---
 
@@ -109,11 +110,11 @@ ask "誰是保哥？" --headless=false
 
 *Note: Subcommands like `ask login` and `ask open` always override the default and run in **headful mode** so you can interact with the UI.*
 
-### 5. Verbose Mode (`--verbose` / `-v`)
+### 5. Verbose Mode (`--verbose`)
 
 By default, `ask` runs in a **quiet, clean mode** that hides all background browser-control logs (such as "Checking open Chrome tabs...", "Typing prompt...", etc.) and only displays the final streamed markdown answer. However, it still plays a beautiful, animated rotating spinner in your terminal while waiting for ChatGPT to generate a response.
 
-If you want to see detailed step-by-step status logs of what `ask` is doing behind the scenes, add the `--verbose` or `-v` flag:
+If you want to see detailed step-by-step status logs of what `ask` is doing behind the scenes, add the `--verbose` flag:
 
 ```bash
 ask "誰是保哥？" --verbose
@@ -126,7 +127,15 @@ This will print every stage of the browser automation:
 - Submitting...
 - Waiting for ChatGPT response...
 
-### 6. Piping & Stdin Support
+### 6. Version Info
+
+Use `-v` or `--version` to print the current version number:
+
+```bash
+ask -v
+```
+
+### 7. Piping & Stdin Support
 
 You can pipe text or files directly into `ask`:
 
@@ -140,7 +149,7 @@ Or read files:
 cat src/main.rs | ask "Are there any memory leaks in this Rust code?"
 ```
 
-### 7. Just Open ChatGPT
+### 8. Just Open ChatGPT
 
 To quickly launch the browser and open ChatGPT without sending any query:
 

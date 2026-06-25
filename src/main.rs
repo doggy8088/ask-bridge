@@ -1,9 +1,10 @@
 use base64::{Engine as _, engine::general_purpose};
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use mcp_cli::McpClient;
 use serde_json::Value;
 use std::io::{self, IsTerminal, Read, Write};
 use std::net::TcpStream;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -11,7 +12,8 @@ use std::time::Duration;
 #[derive(Parser)]
 #[command(name = "ask")]
 #[command(version = "0.1.0")]
-#[command(about = "ChatGPT Browser Automation CLI in Rust", long_about = None)]
+#[command(disable_version_flag = true)]
+#[command(about = "ChatGPT CLI - Ask ChatGPT from your Terminal with your subscription", long_about = None)]
 struct Cli {
     /// The prompt to send to ChatGPT. If empty, reads from standard input.
     prompt: Option<String>,
@@ -24,8 +26,17 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     new: bool,
 
+    /// Print version information.
+    #[arg(
+        long = "version",
+        short = 'v',
+        short_alias = 'V',
+        action = ArgAction::Version
+    )]
+    _version: bool,
+
     /// Print verbose debugging status messages.
-    #[arg(long, short, default_value_t = false)]
+    #[arg(long, default_value_t = false)]
     verbose: bool,
 
     /// Write the final response in Markdown format to the specified file.
@@ -35,6 +46,10 @@ struct Cli {
     /// Write the downloaded images to the specified folder or file path.
     #[arg(long, short = 'i', value_name = "IMAGE_PATH")]
     image_output: Option<String>,
+
+    /// Attach one or more local image files to the prompt (can be specified multiple times).
+    #[arg(long = "image", value_name = "IMAGE_FILE", num_args = 1)]
+    images: Vec<String>,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -1124,6 +1139,157 @@ fn download_images_from_latest_message(
     Ok(())
 }
 
+/// Display an image in the terminal using kitty's icat protocol.
+/// Silently skips if kitty icat is not available.
+fn display_image_in_terminal(image_path: &str) {
+    let _ = Command::new("kitty")
+        .args(["icat", image_path])
+        .status();
+}
+
+/// Encode a local image file as a base64 data URL.
+fn image_to_data_url(path: &str) -> Result<String, String> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| format!("Failed to read image file '{}': {}", path, e))?;
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("png")
+        .to_lowercase();
+    let mime = match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        _ => "image/png",
+    };
+    let b64 = general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:{};base64,{}", mime, b64))
+}
+
+/// Upload local image files to the ChatGPT prompt textarea using the DataTransfer API.
+/// Returns an error string if any image fails to upload.
+fn upload_images_to_chatgpt(
+    config_path: &str,
+    image_paths: &[String],
+    verbose: bool,
+) -> Result<(), String> {
+    if image_paths.is_empty() {
+        return Ok(());
+    }
+
+    if verbose {
+        println!("Attaching {} image(s) to the prompt...", image_paths.len());
+    }
+
+    // Build a JSON array of { name, dataUrl } objects
+    let mut files_json = Vec::new();
+    for path in image_paths {
+        let data_url = image_to_data_url(path)?;
+        let file_name = Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("image.png")
+            .to_string();
+        files_json.push(serde_json::json!({
+            "name": file_name,
+            "dataUrl": data_url
+        }));
+    }
+
+    let files_json_str = serde_json::to_string(&files_json)
+        .map_err(|e| format!("Failed to serialize image data: {}", e))?;
+    // Build JS without raw strings to avoid r#"..."# termination conflicts
+    let js = "() => {\n".to_string()
+        + "    window.__upload_images_status = 'pending';\n"
+        + "    (async () => {\n"
+        + "        try {\n"
+        + &format!("            const filesData = {};\n", files_json_str)
+        + "            const fileObjects = await Promise.all(filesData.map(async (f) => {\n"
+        + "                const res = await fetch(f.dataUrl);\n"
+        + "                const blob = await res.blob();\n"
+        + "                return new File([blob], f.name, { type: blob.type });\n"
+        + "            }));\n"
+        + "            const el = document.getElementById('prompt-textarea');\n"
+        + "            if (!el) {\n"
+        + "                window.__upload_images_status = 'error: textarea not found';\n"
+        + "                return;\n"
+        + "            }\n"
+        + "            el.focus();\n"
+        + "            const fileInput = document.querySelector('input[type=\"file\"]');\n"
+        + "            if (fileInput) {\n"
+        + "                const dt = new DataTransfer();\n"
+        + "                for (const f of fileObjects) dt.items.add(f);\n"
+        + "                fileInput.files = dt.files;\n"
+        + "                fileInput.dispatchEvent(new Event('change', { bubbles: true }));\n"
+        + "                window.__upload_images_status = 'success:file-input';\n"
+        + "                return;\n"
+        + "            }\n"
+        + "            const dt = new DataTransfer();\n"
+        + "            for (const f of fileObjects) dt.items.add(f);\n"
+        + "            const dropEvent = new DragEvent('drop', {\n"
+        + "                bubbles: true, cancelable: true, dataTransfer: dt\n"
+        + "            });\n"
+        + "            el.dispatchEvent(dropEvent);\n"
+        + "            const pasteEvent = new ClipboardEvent('paste', {\n"
+        + "                bubbles: true, cancelable: true, clipboardData: dt\n"
+        + "            });\n"
+        + "            el.dispatchEvent(pasteEvent);\n"
+        + "            window.__upload_images_status = 'success:drop';\n"
+        + "        } catch (e) {\n"
+        + "            window.__upload_images_status = 'error: ' + e.message;\n"
+        + "        }\n"
+        + "    })();\n"
+        + "    return true;\n"
+        + "}";
+
+    let start_res = call_mcp_tool(
+        config_path,
+        "evaluate_script",
+        serde_json::json!({ "function": js }),
+    )?;
+
+    let start_parsed = parse_script_result(&start_res)?;
+    if !start_parsed.as_bool().unwrap_or(false) {
+        return Err("Failed to initiate image upload script".to_string());
+    }
+
+    // Poll for completion
+    let mut wait_cycles = 0;
+    let mut status = String::from("pending");
+    while status == "pending" && wait_cycles < 150 {
+        thread::sleep(Duration::from_millis(200));
+        let check_res = call_mcp_tool(
+            config_path,
+            "evaluate_script",
+            serde_json::json!({ "function": "() => window.__upload_images_status || 'pending'" }),
+        )?;
+        if let Some(s) = parse_script_result(&check_res)
+            .ok()
+            .and_then(|p| p.as_str().map(|r| r.to_string()))
+        {
+            status = s;
+        }
+        wait_cycles += 1;
+    }
+
+    if status.starts_with("error:") {
+        return Err(format!("Image upload failed: {}", status));
+    }
+    if status == "pending" {
+        return Err("Timed out waiting for images to upload".to_string());
+    }
+
+    if verbose {
+        println!("Images attached successfully ({})", status);
+    }
+
+    // Give the UI a moment to render the attachments before typing the prompt
+    thread::sleep(Duration::from_millis(800));
+
+    Ok(())
+}
+
 fn ensure_chatgpt_tab(
     config_path: &str,
     force_new: bool,
@@ -1581,6 +1747,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
+    // Show attached images in the terminal before sending
+    if !cli.images.is_empty() {
+        for img_path in &cli.images {
+            display_image_in_terminal(img_path);
+        }
+    }
+
     // Verify login
     match check_login_status(&config_path) {
         Ok(false) => {
@@ -1597,6 +1770,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         _ => {}
+    }
+
+    // Upload any attached images before counting messages (so the UI is ready)
+    if !cli.images.is_empty() {
+        if let Err(e) = upload_images_to_chatgpt(&config_path, &cli.images, cli.verbose) {
+            eprintln!("Error attaching images: {}", e);
+            std::process::exit(1);
+        }
     }
 
     // Get initial number of assistant messages before submitting the prompt
