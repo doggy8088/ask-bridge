@@ -56,6 +56,12 @@ struct Cli {
     #[arg(long = "file", value_name = "FILE", num_args = 1)]
     files: Vec<String>,
 
+    /// Switch the ChatGPT model (or thinking level) before sending the prompt.
+    /// Examples: "GPT-5.5", "GPT-5.4", "GPT-5.3", "o3", or thinking levels such as
+    /// "即時", "中等", "高", "超高", "專業", "智慧". Matching is case- and punctuation-insensitive.
+    #[arg(long = "model", value_name = "MODEL")]
+    model: Option<String>,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -1395,6 +1401,132 @@ fn upload_attachments_to_chatgpt(
     Ok(())
 }
 
+/// Switch the ChatGPT composer to the specified model or thinking level by driving
+/// the composer's pill menu (a Radix UI menu). The page must already be loaded and
+/// logged in. `model` is matched case- and punctuation-insensitively against the
+/// visible menu item labels (e.g. "GPT-5.4", "o3", "即時", "超高").
+fn switch_model(config_path: &str, model: &str, verbose: bool) -> Result<(), String> {
+    if model.trim().is_empty() {
+        return Err("Empty model name".to_string());
+    }
+    let target_json = serde_json::to_string(model.trim())
+        .map_err(|e| format!("Failed to serialize model name: {}", e))?;
+
+    if verbose {
+        println!("Switching ChatGPT model to '{}'...", model.trim());
+    }
+
+    // The script sets `window.__switch_model_status` and resolves asynchronously.
+    // It opens the composer pill menu, walks visible leaves and submenu triggers,
+    // clicking the first leaf whose normalized label equals the normalized target.
+    // Radix re-renders menus on each open/close, so submenu triggers are tracked by
+    // a stable key (normalized text + aria-label) rather than DOM identity.
+    let js = "() => {\n".to_string()
+        + "    window.__switch_model_status = 'pending';\n"
+        + "    (async () => {\n"
+        + "    try {\n"
+        + "        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));\n"
+        + "        const norm = (s) => (s || '').toLowerCase().replace(/[\\s.\\-_]/g, '');\n"
+        + &format!("        const target = norm({});\n", target_json)
+        + "        if (!target) { window.__switch_model_status = 'error: empty target'; return; }\n"
+        + "        const visited = new Set();\n"
+        + "        const closeMenus = async () => {\n"
+        + "            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));\n"
+        + "            await sleep(400);\n"
+        + "        };\n"
+        + "        await closeMenus();\n"
+        + "        const pill = document.querySelector('button.__composer-pill');\n"
+        + "        if (!pill) { window.__switch_model_status = 'error: composer pill not found'; return; }\n"
+        + "        pill.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));\n"
+        + "        pill.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));\n"
+        + "        pill.click();\n"
+        + "        await sleep(800);\n"
+        + "        let clicked = false;\n"
+        + "        let chosen = '';\n"
+        + "        for (let depth = 0; depth < 6 && !clicked; depth++) {\n"
+        + "            const all = Array.from(document.querySelectorAll('[role=\"menuitem\"], [role=\"menuitemradio\"]'));\n"
+        + "            const leaves = all.filter((it) => it.getAttribute('aria-haspopup') !== 'menu');\n"
+        + "            for (const it of leaves) {\n"
+        + "                const t = norm(it.innerText);\n"
+        + "                if (t && t === target) {\n"
+        + "                    it.click();\n"
+        + "                    clicked = true;\n"
+        + "                    chosen = it.innerText;\n"
+        + "                    break;\n"
+        + "                }\n"
+        + "            }\n"
+        + "            if (clicked) break;\n"
+        + "            const trigs = all.filter((it) => it.getAttribute('aria-haspopup') === 'menu');\n"
+        + "            const trig = trigs.find((it) => {\n"
+        + "                const k = norm(it.innerText) + '|' + (it.getAttribute('aria-label') || '');\n"
+        + "                return !visited.has(k);\n"
+        + "            });\n"
+        + "            if (!trig) break;\n"
+        + "            visited.add(norm(trig.innerText) + '|' + (trig.getAttribute('aria-label') || ''));\n"
+        + "            trig.dispatchEvent(new MouseEvent('pointerenter', { bubbles: true }));\n"
+        + "            trig.dispatchEvent(new MouseEvent('pointermove', { bubbles: true }));\n"
+        + "            trig.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));\n"
+        + "            trig.click();\n"
+        + "            await sleep(750);\n"
+        + "        }\n"
+        + "        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));\n"
+        + "        if (!clicked) {\n"
+        + "            window.__switch_model_status = 'error: model not found in menu';\n"
+        + "            return;\n"
+        + "        }\n"
+        + "        window.__switch_model_status = 'success:' + chosen;\n"
+        + "    } catch (e) {\n"
+        + "        window.__switch_model_status = 'error: ' + e.message;\n"
+        + "    }\n"
+        + "    })();\n"
+        + "    return true;\n"
+        + "}";
+
+    let start_res = call_mcp_tool(
+        config_path,
+        "evaluate_script",
+        serde_json::json!({ "function": js }),
+    )?;
+    let start_parsed = parse_script_result(&start_res)?;
+    if !start_parsed.as_bool().unwrap_or(false) {
+        return Err("Failed to initiate model switch script".to_string());
+    }
+
+    let mut wait_cycles = 0;
+    let mut status = String::from("pending");
+    while status == "pending" && wait_cycles < 60 {
+        thread::sleep(Duration::from_millis(200));
+        let check_res = call_mcp_tool(
+            config_path,
+            "evaluate_script",
+            serde_json::json!({ "function": "() => window.__switch_model_status || 'pending'" }),
+        )?;
+        if let Some(s) = parse_script_result(&check_res)
+            .ok()
+            .and_then(|p| p.as_str().map(|r| r.to_string()))
+        {
+            status = s;
+        }
+        wait_cycles += 1;
+    }
+
+    if status.starts_with("error:") {
+        return Err(format!("Model switch failed: {}", status));
+    }
+    if status == "pending" {
+        return Err("Timed out waiting for model switch".to_string());
+    }
+
+    if verbose {
+        println!("Model switched successfully ({})", status);
+    }
+
+    // Give the UI a moment to settle after switching models
+    thread::sleep(Duration::from_millis(500));
+
+    Ok(())
+}
+
 fn ensure_chatgpt_tab(
     config_path: &str,
     force_new: bool,
@@ -1891,6 +2023,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         _ => {}
+    }
+
+    // Switch model if requested (before uploading attachments / typing the prompt)
+    if let Some(m) = &cli.model {
+        if let Err(e) = switch_model(&config_path, m, cli.verbose) {
+            eprintln!("Error switching model: {}", e);
+            std::process::exit(1);
+        }
     }
 
     // Upload any attached images/files before counting messages (so the UI is ready)

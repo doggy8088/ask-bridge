@@ -19,6 +19,7 @@ Unlike typical API clients, `ask` operates inside a real, headful Chrome browser
 - **🧠 Intelligent Tab Management**: Reuses existing ChatGPT tabs if open, focuses them, or opens new ones, avoiding tab clutter.
 - **🖥️ Pipe & Stdin Support**: Supports piping prompts via `stdin` (e.g. `cat report.txt | ask "summarize this"`).
 - **📎 Image & File Attachments**: Attach local images with `--image` or documents (PDF, Word, Excel, plain text, Markdown, JSON, etc.) with `--file`; each flag can be specified multiple times.
+- **🔀 Model Switching**: Use `--model` to switch the ChatGPT model or thinking level (e.g. `GPT-5.4`, `o3`, `即時`) before the prompt is sent.
 - **🔍 Quiet by Default & Verbose Mode**: Quiet and clean output by default (displaying only the generated response), with an optional `--verbose` flag to display full browser state logs if needed.
 - **Version Info**: Use `-v` or `--version` to print the current version number.
 
@@ -181,7 +182,24 @@ You can attach images and documents at the same time:
 ask "Compare this design image against the spec document and list inconsistencies." --image design.png --file spec.docx
 ```
 
-### 9. Just Open ChatGPT
+### 9. Switch Model
+
+Use `--model` to automatically switch the ChatGPT model or thinking level before the prompt is sent. Matching is case- and punctuation-insensitive (`-`, `.`, spaces, etc. are ignored).
+
+```bash
+ask "Introduce Rust in a few sentences." --model GPT-5.4
+ask "Prove this math problem." --model o3
+ask "Quickly translate this." --model 即時
+```
+
+Available model names (depending on your account entitlements):
+
+- **Models**: `GPT-5.5`, `GPT-5.4`, `GPT-5.3`, `o3`
+- **Thinking levels**: `智慧`, `即時`, `中等`, `高`, `超高`, `專業`
+
+> If the requested name is not found in the menu, `ask` reports `Model switch failed: error: model not found in menu` and aborts without submitting the prompt.
+
+### 10. Just Open ChatGPT
 
 To quickly launch the browser and open ChatGPT without sending any query:
 

@@ -111,6 +111,21 @@ ask "幫我檢查這段程式碼。" --file src/main.rs
 ask "對照這張設計圖與規格文件，指出不一致處。" --image design.png --file spec.docx
 ```
 
+## 切換模型
+
+使用 `--model` 在送出 prompt 前自動切換 ChatGPT 模型或思考強度（不分大小寫與標點）：
+
+```sh
+ask "用幾句話介紹 Rust。" --model GPT-5.4
+ask "證明這個數學問題。" --model o3
+ask "快速翻譯這段話。" --model 即時
+```
+
+可用名稱（視帳號權限）：
+
+- **模型**：`GPT-5.5`、`GPT-5.4`、`GPT-5.3`、`o3`
+- **思考強度**：`智慧`、`即時`、`中等`、`高`、`超高`、`專業`
+
 ## MCP 行為
 
 啟動時，`ask` 會把 MCP 設定寫入：

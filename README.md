@@ -18,6 +18,7 @@
 - **智慧分頁管理**：可重用既有 ChatGPT 分頁、聚焦分頁，或開啟新分頁，避免分頁過度增加。
 - **Pipe 與 stdin 支援**：支援透過 standard input 傳入 prompt，例如 `cat report.txt | ask "summarize this"`。
 - **圖片與文件上傳**：可透過 `--image` 附上本機圖片，或透過 `--file` 附上文件（PDF、Word、Excel、純文字、Markdown、JSON 等皆可），一次可指定多個檔案。
+- **模型切換**：使用 `--model` 在送出 prompt 前自動切換 ChatGPT 模型或思考強度（如 `GPT-5.4`、`o3`、`即時`）。
 - **預設安靜模式與 verbose 模式**：預設只輸出最終回覆；加上 `--verbose` 可顯示背景瀏覽器控制流程。
 - **版本資訊**：使用 `-v` 或 `--version` 顯示目前版本號。
 
@@ -186,7 +187,24 @@ ask "請對照這張設計圖與規格文件，指出不一致的地方。" --im
 
 ChatGPT 回覆後，可使用 `-i` / `--image-output` 指定 ChatGPT 生成圖片的下載路徑（資料夾或檔案路徑）。
 
-### 9. 只開啟 ChatGPT
+### 9. 切換模型
+
+使用 `--model` 在送出 prompt 前自動切換 ChatGPT 的模型或思考強度。比對時不分大小寫與標點符號（`-`、`.`、空格 等）。
+
+```bash
+ask "用幾句話介紹 Rust。" --model GPT-5.4
+ask "證明這個數學問題。" --model o3
+ask "快速翻譯這段話。" --model 即時
+```
+
+可用的模型名稱（視帳號權限而定）：
+
+- **模型**：`GPT-5.5`、`GPT-5.4`、`GPT-5.3`、`o3`
+- **思考強度**：`智慧`、`即時`、`中等`、`高`、`超高`、`專業`
+
+> 若指定的名稱在選單中找不到，`ask` 會回報 `Model switch failed: error: model not found in menu` 並中止，不會送出 prompt。
+
+### 10. 只開啟 ChatGPT
 
 若只想快速開啟瀏覽器並進入 ChatGPT：
 
