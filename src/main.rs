@@ -240,11 +240,13 @@ struct Cli {
 #[derive(Subcommand, Clone)]
 enum Commands {
     /// Open Chrome browser, optionally navigate to a URL, and copy the latest response
+    #[command(hide = true)]
     Open {
         /// Optional conversation URL to open before copying the latest response.
         url: Option<String>,
     },
     /// Retrieve the latest response from the selected provider (defaults to headless)
+    #[command(hide = true)]
     Get {
         /// Optional conversation URL to fetch before copying the latest response.
         url: Option<String>,
@@ -254,8 +256,10 @@ enum Commands {
     /// Close the managed Chrome browser instance
     Close,
     /// Dump the current browser tab HTML for debugging
+    #[command(hide = true)]
     Dump,
     /// Take a screenshot of the current browser tab for debugging
+    #[command(hide = true)]
     Screenshot,
 }
 
@@ -717,6 +721,34 @@ mod tests {
     fn parses_close_command() {
         let cli = Cli::try_parse_from(["ask", "close"]).unwrap();
         assert!(matches!(cli.command, Some(Commands::Close)));
+    }
+
+    #[test]
+    fn hides_debug_commands_from_help() {
+        let mut command = Cli::command();
+        let help = command.render_long_help().to_string();
+
+        assert!(!help.contains("\n  open"));
+        assert!(!help.contains("\n  get"));
+        assert!(!help.contains("\n  dump"));
+        assert!(!help.contains("\n  screenshot"));
+        assert!(help.contains("\n  login"));
+        assert!(help.contains("\n  close"));
+    }
+
+    #[test]
+    fn still_parses_hidden_debug_commands() {
+        let cli = Cli::try_parse_from(["ask", "open"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Open { .. })));
+
+        let cli = Cli::try_parse_from(["ask", "get"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Get { .. })));
+
+        let cli = Cli::try_parse_from(["ask", "dump"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Dump)));
+
+        let cli = Cli::try_parse_from(["ask", "screenshot"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Screenshot)));
     }
 
     #[test]
