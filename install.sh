@@ -100,19 +100,20 @@ if [ -z "$BINARY_PATH" ]; then
     exit 1
 fi
 
-# 5. Install binary
-echo -e "${CYAN}Installing ask to $INSTALL_DIR/ask...${NC}"
-cp "$BINARY_PATH" "$INSTALL_DIR/ask"
-chmod +x "$INSTALL_DIR/ask"
+# 5. Install binary and alias
+echo -e "${CYAN}Installing ask-bridge to $INSTALL_DIR/ask-bridge...${NC}"
+cp "$BINARY_PATH" "$INSTALL_DIR/ask-bridge"
+chmod +x "$INSTALL_DIR/ask-bridge"
+ln -sf "$INSTALL_DIR/ask-bridge" "$INSTALL_DIR/ask"
 
 # 6. Check PATH
 case :$PATH: in
     *:$INSTALL_DIR:*) ;;
     *) 
         echo -e "${YELLOW}Warning: $INSTALL_DIR is not in your PATH.${NC}"
-        echo -e "${YELLOW}To run 'ask' globally, add it to your shell configuration (e.g. ~/.bashrc, ~/.zshrc):${NC}"
+        echo -e "${YELLOW}To run 'ask-bridge' globally, add it to your shell configuration (e.g. ~/.bashrc, ~/.zshrc):${NC}"
         echo -e "${CYAN}  export PATH=\"\$PATH:$INSTALL_DIR\"${NC}"
         ;;
 esac
 
-echo -e "${GREEN}Successfully installed! You can now use the 'ask' command.${NC}"
+echo -e "${GREEN}Successfully installed! You can now use the 'ask-bridge' command. The 'ask' alias is also available.${NC}"

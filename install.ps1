@@ -74,10 +74,12 @@ try {
         exit 1
     }
 
-    # Copy to destination as ask.exe
-    $DestPath = Join-Path $InstallDir "ask.exe"
-    Write-Host "Installing ask.exe to $InstallDir..." -ForegroundColor Cyan
+    # Copy to destination as ask-bridge.exe and keep ask.exe as an alias.
+    $DestPath = Join-Path $InstallDir "ask-bridge.exe"
+    $AliasPath = Join-Path $InstallDir "ask.exe"
+    Write-Host "Installing ask-bridge.exe to $InstallDir..." -ForegroundColor Cyan
     Copy-Item -Path $ExePath.FullName -Destination $DestPath -Force
+    Copy-Item -Path $ExePath.FullName -Destination $AliasPath -Force
 }
 finally {
     # Clean up temp
@@ -104,4 +106,4 @@ if ($CleanPathList -notcontains $InstallDir) {
     Write-Host "Successfully added to PATH. You may need to restart your terminal to apply." -ForegroundColor Green
 }
 
-Write-Host "Successfully installed! You can now use the 'ask' command." -ForegroundColor Green
+Write-Host "Successfully installed! You can now use the 'ask-bridge' command. The 'ask' alias is also available." -ForegroundColor Green

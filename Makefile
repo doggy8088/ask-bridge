@@ -92,15 +92,17 @@ install-browser: ## Install Google Chrome if it is missing (required by Chrome D
 	fi
 
 .PHONY: install
-install: check-node install-browser release ## Install required dependencies, build release, and create an 'ask' symlink in ~/.local/bin/
-	@echo "$(CYAN)Installing binary symlink to ~/.local/bin/ask...$(RESET)"
+install: check-node install-browser release ## Install required dependencies, build release, and create ask-bridge plus ask alias symlinks in ~/.local/bin/
+	@echo "$(CYAN)Installing binary symlink to ~/.local/bin/ask-bridge...$(RESET)"
 	@mkdir -p ~/.local/bin
+	@ln -sf "$$(pwd)/target/release/ask-bridge" ~/.local/bin/ask-bridge
 	@ln -sf "$$(pwd)/target/release/ask-bridge" ~/.local/bin/ask
-	@echo "$(GREEN)Successfully installed! You can now use the 'ask' command globally.$(RESET)"
+	@echo "$(GREEN)Successfully installed! You can now use the 'ask-bridge' command globally. The 'ask' alias is also available.$(RESET)"
 
 .PHONY: uninstall
-uninstall: ## Remove the 'ask' symlink from ~/.local/bin/
-	@echo "$(CYAN)Uninstalling ask...$(RESET)"
+uninstall: ## Remove the ask-bridge command and ask alias from ~/.local/bin/
+	@echo "$(CYAN)Uninstalling ask-bridge and ask alias...$(RESET)"
+	@rm -f ~/.local/bin/ask-bridge
 	@rm -f ~/.local/bin/ask
 	@echo "$(GREEN)Successfully uninstalled.$(RESET)"
 
