@@ -157,9 +157,26 @@ async function installFromRelease() {
   rmSync(tmpDir, { recursive: true, force: true });
 }
 
+function checkChrome() {
+  const chromePaths = {
+    darwin: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    linux: '/usr/bin/google-chrome',
+    win32: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  };
+  const chromePath = chromePaths[process.platform];
+  if (chromePath && !existsSync(chromePath)) {
+    console.warn('');
+    console.warn('⚠️  Google Chrome was not found on your system.');
+    console.warn('   ask-bridge requires Chrome to automate ChatGPT / Gemini.');
+    console.warn('   Please install it from: https://www.google.com/chrome/');
+    console.warn('');
+  }
+}
+
 async function main() {
   if (installFromLocalBuild()) return;
   await installFromRelease();
+  checkChrome();
 }
 
 if (require.main === module) {
@@ -173,6 +190,7 @@ module.exports = {
   TARGETS,
   artifactName,
   cargoTarget,
+  checkChrome,
   findExtractedBinary,
   platformKey,
   releaseBaseUrl,
