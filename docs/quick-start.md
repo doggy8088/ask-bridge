@@ -1,6 +1,6 @@
 # 快速開始
 
-本文件說明如何安裝 `ask-bridge`，並透過 Chrome 自動操作 ChatGPT 或 Gemini。預設 provider 為 ChatGPT，可用 `--provider gemini` 切換。
+本文件說明如何安裝 `ask-bridge`，並透過 Chrome 自動操作 ChatGPT 或 Gemini。未設定全域 provider 時預設為 ChatGPT，可用 `--provider gemini` 或全域設定檔切換。
 
 ## 前置需求
 
@@ -50,6 +50,24 @@ ask-bridge --provider gemini login
 ```
 
 在瀏覽器視窗登入 Gemini 後，回到終端機按 Enter。
+
+## 全域 provider 設定
+
+若希望未指定 `--provider` 時預設使用 Gemini，可執行：
+
+```sh
+ask-bridge config --provider gemini
+```
+
+若要改回 ChatGPT：
+
+```sh
+ask-bridge config --provider chatgpt
+```
+
+可用 `ask-bridge config` 檢視目前設定。
+
+`--provider` 會覆蓋全域設定檔，因此可針對單次命令暫時切換 provider。
 
 ## 提問
 
@@ -152,7 +170,13 @@ ask-bridge close
 
 ## MCP 行為
 
-啟動時，`ask-bridge` 會把 MCP 設定寫入：
+啟動時，`ask-bridge` 會讀取全域設定檔：
+
+```text
+~/.config/ask-bridge/config.json
+```
+
+接著會把 MCP 設定寫入：
 
 ```text
 ~/.config/ask-bridge/mcp_servers.json

@@ -1,6 +1,6 @@
 # Ask Bridge 🦀
 
-`ask-bridge` is a powerful, lightweight command-line tool written in **Rust** that automates ChatGPT or Gemini directly in your real Chrome browser. It uses the **Model Context Protocol (MCP)** and **Chrome DevTools Protocol (CDP)** via the embedded `doggy8088/mcp-cli` Rust library dependency and `chrome-devtools-mcp` to control Chrome, input prompts, click submit, and print the response back to your terminal. ChatGPT is the default provider; use `--provider gemini` to switch to Gemini.
+`ask-bridge` is a powerful, lightweight command-line tool written in **Rust** that automates ChatGPT or Gemini directly in your real Chrome browser. It uses the **Model Context Protocol (MCP)** and **Chrome DevTools Protocol (CDP)** via the embedded `doggy8088/mcp-cli` Rust library dependency and `chrome-devtools-mcp` to control Chrome, input prompts, click submit, and print the response back to your terminal. ChatGPT is the default when no global provider is configured; use `--provider gemini` or the global config file to switch to Gemini.
 
 ## Design Intent
 
@@ -30,6 +30,7 @@ Unlike typical API clients, `ask-bridge` operates inside a real Chrome browser w
 
 - **🦀 100% Rust Core**: Extremely fast, lightweight, and compile-once, run-anywhere binary.
 - **Multi-provider support**: Choose ChatGPT or Gemini with `--provider chatgpt|gemini`.
+- **Global provider config**: Set the default provider in `~/.config/ask-bridge/config.json`; CLI `--provider` overrides the config file.
 - **🌐 Real Browser Automation**: Directly interacts with Chrome on port `9223` (isolated debug profile).
 - **🔒 Persistent Login**: Uses a dedicated local profile directory (`~/.config/ask-bridge/chrome-profile`) so you never lose your login state.
 - **Response Output**: Prints the selected provider's response back to your terminal.
@@ -118,7 +119,7 @@ npx skills add doggy8088/ask-bridge --skill ask-bridge --agent codex --global
 
 ### 1. First Time Setup: Login to a provider
 
-Before sending prompts, you need to log in to the selected provider. ChatGPT is the default:
+Before sending prompts, you need to log in to the selected provider. ChatGPT is the default when no global provider is configured:
 
 ```bash
 ask-bridge login
@@ -134,6 +135,32 @@ ask-bridge --provider gemini login
 - Log in manually to the selected provider page, such as `https://chatgpt.com/` or `https://gemini.google.com/app`.
 - Once logged in, return to your terminal and press **`[Enter]`**.
 - The tool will verify your login status and save your profile. You only need to do this **once**!
+
+#### Global Provider Config
+
+To use Gemini by default when `--provider` is not specified:
+
+```bash
+ask-bridge config --provider gemini
+```
+
+To switch the default back to ChatGPT:
+
+```bash
+ask-bridge config --provider chatgpt
+```
+
+You can check the current setting with:
+
+```bash
+ask-bridge config
+```
+
+`--provider` has higher priority than the global config file, so this command temporarily uses ChatGPT:
+
+```bash
+ask-bridge --provider chatgpt "Summarize this text."
+```
 
 ### 2. Send Prompts Directly
 

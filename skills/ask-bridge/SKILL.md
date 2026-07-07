@@ -41,6 +41,60 @@ ask-bridge -v
 
 若找不到 `ask-bridge`，在 ask-bridge 專案中可先使用既有安裝流程、`cargo run --`，或建置後的 `target/release/ask-bridge`；不要臆測使用者環境已完成設定。
 
+## 全域設定檔
+
+`ask-bridge` 會讀取全域設定檔：
+
+```text
+~/.config/ask-bridge/config.json
+```
+
+可用格式：
+
+```json
+{
+  "provider": "gemini"
+}
+```
+
+或：
+
+```json
+{
+  "provider": "chatgpt"
+}
+```
+
+provider 優先序：
+
+1. CLI `--provider chatgpt|gemini`
+2. `~/.config/ask-bridge/config.json` 的 `provider`
+3. 內建預設 `chatgpt`
+
+若需要替使用者設定預設 provider，可建立設定檔：
+
+```sh
+ask-bridge config --provider gemini
+```
+
+若要改回 ChatGPT：
+
+```sh
+ask-bridge config --provider chatgpt
+```
+
+使用 `ask-bridge config` 可查看目前設定：
+
+```sh
+ask-bridge config
+```
+
+若任務需要單次覆蓋全域設定，直接使用 `--provider`，不要修改設定檔：
+
+```sh
+ask-bridge --provider chatgpt '請摘要這段內容。'
+```
+
 首次使用或登入失效時，`ask-bridge` 可能需要瀏覽器互動登入。只有在任務允許互動式登入時才執行：
 
 ```sh
@@ -98,7 +152,7 @@ prompt + "\n\n" + stdin
 | 參數 | 用途 | 用法重點 |
 |---|---|---|
 | `[PROMPT]` | 要送給 provider 的文字 prompt | 可省略；若 stdin 有內容則使用 stdin；若兩者都有，會以兩個換行串接 |
-| `-p`, `--provider <PROVIDER>` | 選擇 provider | 可用 `chatgpt` 或 `gemini`；預設 `chatgpt`；此為 global option，可放在子命令前後 |
+| `-p`, `--provider <PROVIDER>` | 選擇 provider | 可用 `chatgpt` 或 `gemini`；此為 global option，可放在子命令前後；優先權高於全域設定檔 |
 | `--headless[=<HEADLESS>]` | 控制 Chrome 是否 headless | 預設 `true`；要顯示瀏覽器請用 `--headless=false`；不要寫成 `--headless false` |
 | `--new` | 開啟全新 provider 對話 | 會開新分頁並清理同 provider 舊分頁；用於隔離上下文 |
 | `-v`, `-V`, `--version` | 顯示版本 | `-V` 是原始碼中定義的短別名；文件與一般操作優先用 `-v` 或 `--version` |
@@ -109,6 +163,7 @@ prompt + "\n\n" + stdin
 | `--file <FILE>` | 附加文件檔，可重複指定 | 支援 PDF、Word、Excel、PowerPoint、純文字、Markdown、CSV、JSON、程式碼等；ChatGPT 與 Gemini 都可用 |
 | `--model <MODEL>` | 送出 prompt 前切換模型 | 比對不分大小寫與標點；模型名稱取決於 provider UI 與帳號權限 |
 | `-h`, `--help` | 顯示 help | 可用 `ask-bridge --help` 或 `ask-bridge help <COMMAND>` |
+| `config` | 設定或顯示全域預設 provider | 使用 `ask-bridge config --provider <chatgpt|gemini>` |
 
 ## Provider 選擇
 
@@ -129,7 +184,8 @@ ask-bridge -p gemini '請摘要這份文件。' --file notes.md
 
 選擇原則：
 
-- 使用 ChatGPT 作為預設 provider，尤其是需要圖片輸入時。
+- 未指定 `--provider` 時，先依全域設定檔選擇 provider；設定檔不存在時使用 ChatGPT。
+- 使用 ChatGPT 作為未設定時的預設 provider，尤其是需要圖片輸入時。
 - 使用 Gemini 做替代觀點、快速摘要或使用者明確要求 Gemini 時。
 - 若 provider 失敗，可在不增加風險的情況下改用另一個 provider 一次。
 - 不要硬編不存在的模型名稱；只有使用者指定或專案文件明確列出時才使用 `--model`。

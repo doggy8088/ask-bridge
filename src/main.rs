@@ -1,11 +1,12 @@
 use base64::{Engine as _, engine::general_purpose};
 use clap::{ArgAction, CommandFactory, Parser, Subcommand, ValueEnum};
 use mcp_cli::McpClient;
+use serde::Deserialize;
 use serde_json::Value;
 use std::fmt;
 use std::io::{self, IsTerminal, Read, Write};
 use std::net::TcpStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -19,6 +20,14 @@ enum Provider {
 }
 
 impl Provider {
+    fn from_config_value(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "chatgpt" | "chat-gpt" | "chat_gpt" => Some(Provider::ChatGpt),
+            "gemini" => Some(Provider::Gemini),
+            _ => None,
+        }
+    }
+
     fn display_name(self) -> &'static str {
         match self {
             Provider::ChatGpt => "ChatGPT",
@@ -186,9 +195,9 @@ struct Cli {
     /// `prompt + "\\n\\n" + stdin`.
     prompt: Option<String>,
 
-    /// AI provider to automate.
-    #[arg(long, short = 'p', value_enum, global = true, default_value_t = Provider::ChatGpt)]
-    provider: Provider,
+    /// AI provider to automate. Overrides ~/.config/ask-bridge/config.json.
+    #[arg(long, short = 'p', value_enum, global = true)]
+    provider: Option<Provider>,
 
     /// Run Chrome in headless mode. Defaults to true.
     #[arg(long, require_equals = true, num_args = 0..=1, default_value = "true", default_missing_value = "true")]
@@ -257,12 +266,145 @@ enum Commands {
     Login,
     /// Close the managed Chrome browser instance
     Close,
+    /// Set or show the global default provider used when --provider is not specified.
+    Config,
     /// Dump the current browser tab HTML for debugging
     #[command(hide = true)]
     Dump,
     /// Take a screenshot of the current browser tab for debugging
     #[command(hide = true)]
     Screenshot,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct AppConfig {
+    provider: Option<String>,
+}
+
+fn config_file_path() -> Result<PathBuf, String> {
+    let mut config_path = home::home_dir().ok_or("Could not locate home directory")?;
+    config_path.push(".config/ask-bridge/config.json");
+    Ok(config_path)
+}
+
+fn parse_configured_provider(content: &str) -> Result<Option<Provider>, String> {
+    let config: AppConfig =
+        serde_json::from_str(content).map_err(|e| format!("Failed to parse config.json: {}", e))?;
+
+    match config.provider {
+        Some(provider) => Provider::from_config_value(&provider)
+            .map(Some)
+            .ok_or_else(|| format!("Invalid provider in config.json: {}", provider)),
+        None => Ok(None),
+    }
+}
+
+fn load_configured_provider() -> Result<Option<Provider>, String> {
+    let config_path = config_file_path()?;
+    if !config_path.exists() {
+        return Ok(None);
+    }
+
+    let content = std::fs::read_to_string(&config_path).map_err(|e| {
+        format!(
+            "Failed to read config file {}: {}",
+            config_path.to_string_lossy(),
+            e
+        )
+    })?;
+
+    parse_configured_provider(&content).map_err(|e| {
+        format!(
+            "{}. Expected format: {{\"provider\":\"chatgpt\"}} or {{\"provider\":\"gemini\"}}",
+            e
+        )
+    })
+}
+
+fn effective_provider(
+    cli_provider: Option<Provider>,
+    configured_provider: Option<Provider>,
+) -> Provider {
+    cli_provider
+        .or(configured_provider)
+        .unwrap_or(Provider::ChatGpt)
+}
+
+fn resolve_provider_with<F>(
+    cli_provider: Option<Provider>,
+    load_provider: F,
+) -> Result<Provider, String>
+where
+    F: FnOnce() -> Result<Option<Provider>, String>,
+{
+    if let Some(provider) = cli_provider {
+        return Ok(provider);
+    }
+
+    Ok(effective_provider(None, load_provider()?))
+}
+
+fn resolve_provider(cli_provider: Option<Provider>) -> Result<Provider, String> {
+    resolve_provider_with(cli_provider, load_configured_provider)
+}
+
+fn write_global_provider_config(provider: Provider) -> Result<(), String> {
+    let config_path = config_file_path()?;
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "Failed to create config directory {}: {}",
+                parent.to_string_lossy(),
+                e
+            )
+        })?;
+    }
+
+    let content = serde_json::to_string_pretty(&serde_json::json!({"provider": provider.to_string()}))
+        .map_err(|e| format!("Failed to serialize provider config: {}", e))?;
+    std::fs::write(&config_path, format!("{}\n", content)).map_err(|e| {
+        format!(
+            "Failed to write config file {}: {}",
+            config_path.to_string_lossy(),
+            e
+        )
+    })?;
+
+    println!(
+        "Set default provider to '{}' in {}",
+        provider,
+        config_path.to_string_lossy()
+    );
+
+    Ok(())
+}
+
+fn run_config_command(cli_provider: Option<Provider>) -> Result<(), String> {
+    match cli_provider {
+        Some(provider) => write_global_provider_config(provider),
+        None => {
+            let config_path = config_file_path()?;
+            let configured_provider = load_configured_provider()?;
+            match configured_provider {
+                Some(provider) => {
+                    println!("Current default provider: {}", provider);
+                }
+                None => {
+                    println!("No default provider configured.");
+                    println!("The effective provider is ChatGPT.");
+                }
+            }
+            if config_path.exists() {
+                println!("Config file: {}", config_path.to_string_lossy());
+            } else {
+                println!("Config file not created yet: {}", config_path.to_string_lossy());
+            }
+            println!("Set default provider with: ask-bridge config --provider <chatgpt|gemini>");
+            println!("This is a one-time override example: ask-bridge --provider gemini <prompt>");
+            Ok(())
+        }
+    }
 }
 
 struct Page {
@@ -381,7 +523,9 @@ fn start_chrome_if_needed(headless: bool, verbose: bool) -> Result<(), String> {
         }
 
         if verbose {
-            println!("Found ask-bridge Chrome on port 9223 running visibly. Restarting in background...");
+            println!(
+                "Found ask-bridge Chrome on port 9223 running visibly. Restarting in background..."
+            );
         }
         stop_ask_chrome_on_debug_port(&profile_path)?;
     }
@@ -693,8 +837,8 @@ fn render_markdown(markdown: &str, use_glow: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_provider_feature_support(cli: &Cli) -> Result<(), String> {
-    if cli.provider == Provider::Gemini && !cli.images.is_empty() {
+fn validate_provider_feature_support(provider: Provider, cli: &Cli) -> Result<(), String> {
+    if provider == Provider::Gemini && !cli.images.is_empty() {
         return Err(
             "Gemini image attachments are not supported yet. Use --file for Gemini document attachments."
                 .to_string(),
@@ -711,12 +855,84 @@ mod tests {
     #[test]
     fn parses_provider_as_global_argument() {
         let cli = Cli::try_parse_from(["ask-bridge", "--provider", "gemini", "login"]).unwrap();
-        assert_eq!(cli.provider, Provider::Gemini);
+        assert_eq!(cli.provider, Some(Provider::Gemini));
         assert!(matches!(cli.command, Some(Commands::Login)));
 
         let cli = Cli::try_parse_from(["ask-bridge", "login", "--provider", "gemini"]).unwrap();
-        assert_eq!(cli.provider, Provider::Gemini);
+        assert_eq!(cli.provider, Some(Provider::Gemini));
         assert!(matches!(cli.command, Some(Commands::Login)));
+    }
+
+    #[test]
+    fn parses_config_command() {
+        let cli = Cli::try_parse_from(["ask-bridge", "config", "--provider", "gemini"]).unwrap();
+        assert_eq!(cli.provider, Some(Provider::Gemini));
+        assert!(matches!(cli.command, Some(Commands::Config)));
+    }
+
+    #[test]
+    fn parses_config_command_without_provider() {
+        let cli = Cli::try_parse_from(["ask-bridge", "config"]).unwrap();
+        assert_eq!(cli.provider, None);
+        assert!(matches!(cli.command, Some(Commands::Config)));
+    }
+
+    #[test]
+    fn leaves_provider_unset_when_cli_argument_is_missing() {
+        let cli = Cli::try_parse_from(["ask-bridge", "hello"]).unwrap();
+        assert_eq!(cli.provider, None);
+    }
+
+    #[test]
+    fn parses_provider_from_config_json() {
+        assert_eq!(
+            parse_configured_provider(r#"{"provider":"gemini"}"#).unwrap(),
+            Some(Provider::Gemini)
+        );
+        assert_eq!(
+            parse_configured_provider(r#"{"provider":"chatgpt"}"#).unwrap(),
+            Some(Provider::ChatGpt)
+        );
+        assert_eq!(
+            parse_configured_provider(r#"{"provider":"chat-gpt"}"#).unwrap(),
+            Some(Provider::ChatGpt)
+        );
+        assert_eq!(parse_configured_provider(r#"{}"#).unwrap(), None);
+    }
+
+    #[test]
+    fn resolves_provider_precedence() {
+        assert_eq!(
+            effective_provider(Some(Provider::ChatGpt), Some(Provider::Gemini)),
+            Provider::ChatGpt
+        );
+        assert_eq!(
+            effective_provider(None, Some(Provider::Gemini)),
+            Provider::Gemini
+        );
+        assert_eq!(effective_provider(None, None), Provider::ChatGpt);
+    }
+
+    #[test]
+    fn cli_provider_bypasses_invalid_config() {
+        let provider = resolve_provider_with(Some(Provider::ChatGpt), || {
+            Err("config should not be loaded".to_string())
+        })
+        .unwrap();
+
+        assert_eq!(provider, Provider::ChatGpt);
+    }
+
+    #[test]
+    fn resolves_provider_from_config_when_cli_provider_is_missing() {
+        let provider = resolve_provider_with(None, || Ok(Some(Provider::Gemini))).unwrap();
+        assert_eq!(provider, Provider::Gemini);
+    }
+
+    #[test]
+    fn rejects_invalid_provider_in_config_json() {
+        let err = parse_configured_provider(r#"{"provider":"claude"}"#).unwrap_err();
+        assert!(err.contains("Invalid provider"));
     }
 
     #[test]
@@ -806,15 +1022,21 @@ mod tests {
             "read",
         ])
         .unwrap();
-        assert!(validate_provider_feature_support(&cli).is_err());
+        assert!(validate_provider_feature_support(Provider::Gemini, &cli).is_err());
     }
 
     #[test]
     fn allows_gemini_file_attachments() {
-        let cli =
-            Cli::try_parse_from(["ask-bridge", "--provider", "gemini", "--file", "token.txt", "read"])
-                .unwrap();
-        assert!(validate_provider_feature_support(&cli).is_ok());
+        let cli = Cli::try_parse_from([
+            "ask-bridge",
+            "--provider",
+            "gemini",
+            "--file",
+            "token.txt",
+            "read",
+        ])
+        .unwrap();
+        assert!(validate_provider_feature_support(Provider::Gemini, &cli).is_ok());
     }
 }
 
@@ -2435,12 +2657,29 @@ fn check_login_status(config_path: &str, provider: Provider) -> Result<bool, Str
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    if let Err(e) = validate_provider_feature_support(&cli) {
+
+    if matches!(cli.command, Some(Commands::Config)) {
+        if let Err(e) = run_config_command(cli.provider) {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+
+        return Ok(());
+    }
+
+    let provider = match resolve_provider(cli.provider) {
+        Ok(provider) => provider,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    if let Err(e) = validate_provider_feature_support(provider, &cli) {
         eprintln!("Error: {}", e);
         std::process::exit(1);
     }
 
-    let provider = cli.provider;
     if !cli.verbose {
         // SAFETY: Called before spawning other threads and before loading MCP config.
         unsafe {

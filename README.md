@@ -1,6 +1,6 @@
 # Ask Bridge 🦀
 
-`ask-bridge` 是以 Rust 撰寫的輕量命令列工具，可透過真實 Chrome 瀏覽器自動操作 ChatGPT 與 Gemini。它使用 Model Context Protocol MCP 與 Chrome DevTools Protocol CDP，並透過內建的 `doggy8088/mcp-cli` Rust library dependency 搭配 `chrome-devtools-mcp` 控制 Chrome、輸入 prompt、送出訊息，並將回覆輸出到終端機。預設 provider 為 ChatGPT，可用 `--provider gemini` 切換到 Gemini。
+`ask-bridge` 是以 Rust 撰寫的輕量命令列工具，可透過真實 Chrome 瀏覽器自動操作 ChatGPT 與 Gemini。它使用 Model Context Protocol MCP 與 Chrome DevTools Protocol CDP，並透過內建的 `doggy8088/mcp-cli` Rust library dependency 搭配 `chrome-devtools-mcp` 控制 Chrome、輸入 prompt、送出訊息，並將回覆輸出到終端機。未設定全域 provider 時預設使用 ChatGPT，可用 `--provider gemini` 或全域設定檔切換到 Gemini。
 
 ## 設計意圖
 
@@ -29,6 +29,7 @@
 
 - **100% Rust 核心**：快速、輕量，編譯後即可執行。
 - **多 provider 支援**：使用 `--provider chatgpt|gemini` 選擇 ChatGPT 或 Gemini。
+- **全域 provider 設定**：可在 `~/.config/ask-bridge/config.json` 指定預設 provider，CLI 的 `--provider` 會覆蓋設定檔。
 - **真實瀏覽器自動化**：直接控制監聽 `9223` port 的 Chrome debug profile。
 - **持久登入狀態**：使用專屬本機 profile 目錄 `~/.config/ask-bridge/chrome-profile`，避免重複登入。
 - **回覆輸出**：所選 provider 產生回覆時，將內容輸出到終端機。
@@ -111,7 +112,7 @@ npx skills add doggy8088/ask-bridge --skill ask-bridge --agent codex --global
 
 ### 1. 首次設定：登入 provider
 
-送出 prompt 前，需要先登入所選 provider。ChatGPT 為預設：
+送出 prompt 前，需要先登入所選 provider。未設定全域 provider 時，ChatGPT 為預設：
 
 ```bash
 ask-bridge login
@@ -131,6 +132,32 @@ ask-bridge --provider gemini login
 - 在你回到終端機按 Enter 後，驗證登入狀態並保存 profile。
 
 此流程通常只需要執行一次。
+
+#### 全域 provider 設定
+
+若希望未指定 `--provider` 時預設使用 Gemini，可用 `ask-bridge config` 指定：
+
+```bash
+ask-bridge config --provider gemini
+```
+
+若要改回 ChatGPT：
+
+```bash
+ask-bridge config --provider chatgpt
+```
+
+可檢視目前設定：
+
+```bash
+ask-bridge config
+```
+
+`--provider` 的優先權高於全域設定檔，因此以下命令會暫時使用 ChatGPT：
+
+```bash
+ask-bridge --provider chatgpt "請摘要這段內容。"
+```
 
 ### 2. 直接提問
 
