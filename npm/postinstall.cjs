@@ -19,7 +19,7 @@ const { URL } = require('node:url');
 
 const PACKAGE_ROOT = join(__dirname, '..');
 const BINARY_NAME = "ask-bridge";
-const GITHUB_OWNER = "REPLACE_ME";
+const GITHUB_OWNER = "doggy8088";
 const GITHUB_REPO = "ask-bridge";
 const BIN_DIR = join(__dirname, `${BINARY_NAME}-bin`);
 const BIN_NAME = process.platform === 'win32' ? `${BINARY_NAME}.exe` : BINARY_NAME;
