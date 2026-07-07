@@ -39,7 +39,7 @@ if (-not $chromeFound) {
 }
 
 # 3. Target configuration
-$Version = "0.1.0"
+$Version = "0.1.1"
 $RepoOwner = "doggy8088"
 $RepoName = "ask-bridge"
 $ArtifactName = "ask-bridge-x86_64-pc-windows-msvc.zip"

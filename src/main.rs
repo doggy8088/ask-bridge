@@ -177,7 +177,7 @@ impl fmt::Display for Provider {
 
 #[derive(Parser)]
 #[command(name = "ask")]
-#[command(version = "0.1.0")]
+#[command(version = "0.1.1")]
 #[command(disable_version_flag = true)]
 #[command(about = "AI browser CLI - Ask ChatGPT or Gemini from your Terminal with your subscription", long_about = None)]
 struct Cli {
