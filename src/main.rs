@@ -176,7 +176,7 @@ impl fmt::Display for Provider {
 }
 
 #[derive(Parser)]
-#[command(name = "ask")]
+#[command(name = "ask-bridge")]
 #[command(version = "0.1.1")]
 #[command(disable_version_flag = true)]
 #[command(about = "AI browser CLI - Ask ChatGPT or Gemini from your Terminal with your subscription", long_about = None)]
@@ -381,7 +381,7 @@ fn start_chrome_if_needed(headless: bool, verbose: bool) -> Result<(), String> {
         }
 
         if verbose {
-            println!("Found ask Chrome on port 9223 running visibly. Restarting in background...");
+            println!("Found ask-bridge Chrome on port 9223 running visibly. Restarting in background...");
         }
         stop_ask_chrome_on_debug_port(&profile_path)?;
     }
@@ -519,7 +519,7 @@ fn close_ask_chrome_on_debug_port(profile_path: &str) -> Result<bool, String> {
         thread::sleep(Duration::from_millis(100));
     }
 
-    Err("Timed out waiting for existing ask Chrome to stop".to_string())
+    Err("Timed out waiting for existing ask-bridge Chrome to stop".to_string())
 }
 
 fn stop_ask_chrome_on_debug_port(profile_path: &str) -> Result<(), String> {
@@ -710,18 +710,18 @@ mod tests {
 
     #[test]
     fn parses_provider_as_global_argument() {
-        let cli = Cli::try_parse_from(["ask", "--provider", "gemini", "login"]).unwrap();
+        let cli = Cli::try_parse_from(["ask-bridge", "--provider", "gemini", "login"]).unwrap();
         assert_eq!(cli.provider, Provider::Gemini);
         assert!(matches!(cli.command, Some(Commands::Login)));
 
-        let cli = Cli::try_parse_from(["ask", "login", "--provider", "gemini"]).unwrap();
+        let cli = Cli::try_parse_from(["ask-bridge", "login", "--provider", "gemini"]).unwrap();
         assert_eq!(cli.provider, Provider::Gemini);
         assert!(matches!(cli.command, Some(Commands::Login)));
     }
 
     #[test]
     fn parses_close_command() {
-        let cli = Cli::try_parse_from(["ask", "close"]).unwrap();
+        let cli = Cli::try_parse_from(["ask-bridge", "close"]).unwrap();
         assert!(matches!(cli.command, Some(Commands::Close)));
     }
 
@@ -740,22 +740,22 @@ mod tests {
 
     #[test]
     fn still_parses_hidden_debug_commands() {
-        let cli = Cli::try_parse_from(["ask", "open"]).unwrap();
+        let cli = Cli::try_parse_from(["ask-bridge", "open"]).unwrap();
         assert!(matches!(cli.command, Some(Commands::Open { .. })));
 
-        let cli = Cli::try_parse_from(["ask", "get"]).unwrap();
+        let cli = Cli::try_parse_from(["ask-bridge", "get"]).unwrap();
         assert!(matches!(cli.command, Some(Commands::Get { .. })));
 
-        let cli = Cli::try_parse_from(["ask", "dump"]).unwrap();
+        let cli = Cli::try_parse_from(["ask-bridge", "dump"]).unwrap();
         assert!(matches!(cli.command, Some(Commands::Dump)));
 
-        let cli = Cli::try_parse_from(["ask", "screenshot"]).unwrap();
+        let cli = Cli::try_parse_from(["ask-bridge", "screenshot"]).unwrap();
         assert!(matches!(cli.command, Some(Commands::Screenshot)));
     }
 
     #[test]
     fn rejects_unknown_provider() {
-        assert!(Cli::try_parse_from(["ask", "--provider", "claude", "hello"]).is_err());
+        assert!(Cli::try_parse_from(["ask-bridge", "--provider", "claude", "hello"]).is_err());
     }
 
     #[test]
@@ -798,7 +798,7 @@ mod tests {
     #[test]
     fn rejects_gemini_image_attachments() {
         let cli = Cli::try_parse_from([
-            "ask",
+            "ask-bridge",
             "--provider",
             "gemini",
             "--image",
@@ -812,7 +812,7 @@ mod tests {
     #[test]
     fn allows_gemini_file_attachments() {
         let cli =
-            Cli::try_parse_from(["ask", "--provider", "gemini", "--file", "token.txt", "read"])
+            Cli::try_parse_from(["ask-bridge", "--provider", "gemini", "--file", "token.txt", "read"])
                 .unwrap();
         assert!(validate_provider_feature_support(&cli).is_ok());
     }
@@ -2472,10 +2472,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         match close_ask_chrome_on_debug_port(&profile_path) {
-            Ok(true) => println!("Closed ask Chrome browser instance."),
-            Ok(false) => println!("No ask Chrome browser instance is running."),
+            Ok(true) => println!("Closed ask-bridge Chrome browser instance."),
+            Ok(false) => println!("No ask-bridge Chrome browser instance is running."),
             Err(e) => {
-                eprintln!("Error closing ask Chrome browser instance: {}", e);
+                eprintln!("Error closing ask-bridge Chrome browser instance: {}", e);
                 std::process::exit(1);
             }
         }
@@ -2609,7 +2609,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 match check_login_status(&config_path, provider) {
                     Ok(true) => println!(
-                        "Success: Logged in successfully! You can now use the `ask` command."
+                        "Success: Logged in successfully! You can now use the `ask-bridge` command."
                     ),
                     _ => println!(
                         "Warning: We still detected a login button on the page. You might not be fully logged in. Please verify."
@@ -2744,7 +2744,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 provider.display_name()
             );
             eprintln!(
-                "Please run `ask --provider {} login` to log in manually first, and then run your query again.\n",
+                "Please run `ask-bridge --provider {} login` to log in manually first, and then run your query again.\n",
                 provider
             );
             std::process::exit(1);
