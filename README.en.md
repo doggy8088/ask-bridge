@@ -2,6 +2,23 @@
 
 `ask` is a powerful, lightweight command-line tool written in **Rust** that automates ChatGPT or Gemini directly in your real Chrome browser. It uses the **Model Context Protocol (MCP)** and **Chrome DevTools Protocol (CDP)** via the embedded `doggy8088/mcp-cli` Rust library dependency and `chrome-devtools-mcp` to control Chrome, input prompts, click submit, and print the response back to your terminal. ChatGPT is the default provider; use `--provider gemini` to switch to Gemini.
 
+## Design Intent
+
+The core purpose of `ask` is not to replace ChatGPT, Gemini, or any Coding Agent. It is to bridge them together. During software development, many AI-assisted tasks are exploratory: researching background information, summarizing documents, comparing options, digesting error messages, analyzing code snippets, drafting text, or clarifying uncertain technical questions. These tasks do not always need to be handled directly by the primary Coding Agent, and they do not always justify using the same agent budget that should be reserved for code editing, testing, refactoring, and integration work.
+
+With `ask`, a Coding Agent can delegate low-risk, exploratory, and research-oriented tasks to the ChatGPT or Gemini websites, then bring the website response back into the terminal or the next step of the local workflow. Because ChatGPT and Gemini website usage quotas are typically separate from Coding Agent execution quotas, `ask` gives developers a more flexible way to allocate AI resources: the primary agent can focus on understanding the repository, modifying code, running tests, and integrating results, while website-based AI handles background research, text processing, and candidate solution generation.
+
+In other words, `ask` is an external research bridge for AI Agents. It turns the manual workflow of switching to a browser, pasting a prompt, waiting for a response, and copying the result back into a command-line-driven automation capability. This lets an agent request help from ChatGPT or Gemini without leaving the local development workflow, then use the response as supporting context for its own judgment.
+
+This tool is especially useful for:
+
+- Sending large documents, error messages, or code snippets to a website-based AI for summarization, comparison, or first-pass analysis.
+- Letting a Coding Agent outsource background research, alternative analysis, or checklist generation before implementation.
+- Moving AI tasks that do not directly modify project files out of the primary agent workflow.
+- Reusing existing ChatGPT or Gemini web accounts for interactive website features outside an API workflow.
+
+`ask` does not guarantee that provider output is correct, and it should not replace local tests, official documentation checks, or human review. Its role is to reduce the operational cost of exploratory AI work and let the primary Coding Agent obtain external AI assistance with less friction.
+
 Unlike typical API clients, `ask` operates inside a real Chrome browser with a **persistent user profile**. This means:
 - You log in manually **once** (`ask login`).
 - You can solve CAPTCHAs, pass provider-side browser checks, and access the selected provider's web features like a normal user.
