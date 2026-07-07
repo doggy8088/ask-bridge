@@ -71,7 +71,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ask-chatgpt"
+name = "ask-bridge"
 version = "0.1.0"
 dependencies = [
  "base64",

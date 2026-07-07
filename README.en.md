@@ -1,4 +1,4 @@
-# Ask ChatGPT (Rust Version) 🦀
+# Ask Bridge 🦀
 
 `ask` is a powerful, lightweight command-line tool written in **Rust** that automates ChatGPT or Gemini directly in your real Chrome browser. It uses the **Model Context Protocol (MCP)** and **Chrome DevTools Protocol (CDP)** via the embedded `doggy8088/mcp-cli` Rust library dependency and `chrome-devtools-mcp` to control Chrome, input prompts, click submit, and print the response back to your terminal. ChatGPT is the default provider; use `--provider gemini` to switch to Gemini.
 
@@ -14,7 +14,7 @@ Unlike typical API clients, `ask` operates inside a real Chrome browser with a *
 - **🦀 100% Rust Core**: Extremely fast, lightweight, and compile-once, run-anywhere binary.
 - **Multi-provider support**: Choose ChatGPT or Gemini with `--provider chatgpt|gemini`.
 - **🌐 Real Browser Automation**: Directly interacts with Chrome on port `9223` (isolated debug profile).
-- **🔒 Persistent Login**: Uses a dedicated local profile directory (`~/.config/ask-chatgpt/chrome-profile`) so you never lose your login state.
+- **🔒 Persistent Login**: Uses a dedicated local profile directory (`~/.config/ask-bridge/chrome-profile`) so you never lose your login state.
 - **Response Output**: Prints the selected provider's response back to your terminal.
 - **🌀 TUI Thinking Animation**: Displays a rotating spinner while waiting for the provider to reply, then clears it once output starts.
 - **🧠 Intelligent Tab Management**: Reuses existing provider tabs if open, focuses them, or opens new ones, avoiding tab clutter.
@@ -57,7 +57,7 @@ If you only want to build without installing:
 cargo build --release
 ```
 
-The compiled binary will be located at `target/release/ask-chatgpt`.
+The compiled binary will be located at `target/release/ask-bridge`.
 
 ---
 
@@ -233,14 +233,14 @@ To close the Chrome debug profile instance managed by `ask`:
 ask close
 ```
 
-`close` only shuts down the `ask` Chrome instance that uses `~/.config/ask-chatgpt/chrome-profile` and listens on debug port `9223`. If that port is occupied by a non-`ask` Chrome process, it reports an error instead of closing it.
+`close` only shuts down the `ask` Chrome instance that uses `~/.config/ask-bridge/chrome-profile` and listens on debug port `9223`. If that port is occupied by a non-`ask` Chrome process, it reports an error instead of closing it.
 
 ---
 
 ## ⚙️ How It Works (Under the Hood)
 
-1. **Browser Initialization**: `ask` checks if Chrome is listening on debugging port `9223`. If not, it spawns Google Chrome as a background process with a custom profile directory (`~/.config/ask-chatgpt/chrome-profile`).
-2. **MCP Bridge Config**: On startup, it automatically writes a custom `mcp_servers.json` to `~/.config/ask-chatgpt/mcp_servers.json`, configuring the Chrome DevTools MCP server by default with `chrome-devtools-mcp@latest` and `--browser-url=http://127.0.0.1:9223`.
+1. **Browser Initialization**: `ask` checks if Chrome is listening on debugging port `9223`. If not, it spawns Google Chrome as a background process with a custom profile directory (`~/.config/ask-bridge/chrome-profile`).
+2. **MCP Bridge Config**: On startup, it automatically writes a custom `mcp_servers.json` to `~/.config/ask-bridge/mcp_servers.json`, configuring the Chrome DevTools MCP server by default with `chrome-devtools-mcp@latest` and `--browser-url=http://127.0.0.1:9223`.
 3. **Client Call**: `ask` calls the embedded `doggy8088/mcp-cli` Rust library dependency, invoking `list_pages`, `select_page`, `type_text`, and `evaluate_script` tools to automate the DOM without relying on an external `mcp-cli` executable.
 4. **State Polling**: During generation, a lightweight JavaScript engine checks the provider's send/stop button states and extracts response element inner-text for terminal output.
 

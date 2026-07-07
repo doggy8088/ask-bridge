@@ -81,7 +81,7 @@ install-browser: ## Install Google Chrome if it is missing (required by Chrome D
 install: install-browser release ## Install required browser, build release, and create an 'ask' symlink in ~/.local/bin/
 	@echo "$(CYAN)Installing binary symlink to ~/.local/bin/ask...$(RESET)"
 	@mkdir -p ~/.local/bin
-	@ln -sf "$$(pwd)/target/release/ask-chatgpt" ~/.local/bin/ask
+	@ln -sf "$$(pwd)/target/release/ask-bridge" ~/.local/bin/ask
 	@echo "$(GREEN)Successfully installed! You can now use the 'ask' command globally.$(RESET)"
 
 .PHONY: uninstall
@@ -95,4 +95,4 @@ uninstall: ## Remove the 'ask' symlink from ~/.local/bin/
 .PHONY: test-query
 test-query: release ## Run a quick test query to verify functionality
 	@echo "$(CYAN)Running verification query...$(RESET)"
-	./target/release/ask-chatgpt "請用五個字自我介紹。"
+	./target/release/ask-bridge "請用五個字自我介紹。"

@@ -37,7 +37,7 @@ jobs:
       - name: Package binary
         shell: pwsh
         run: |
-          $binary = "target/${{ matrix.target }}/release/ask-chatgpt"
+          $binary = "target/${{ matrix.target }}/release/ask-bridge"
           if ("${{ runner.os }}" -eq "Windows") {
             $binary = "$binary.exe"
           }
@@ -46,7 +46,7 @@ jobs:
           }
 
           New-Item -ItemType Directory -Force dist | Out-Null
-          $archive = "dist/ask-chatgpt-${{ matrix.target }}.${{ matrix.ext }}"
+          $archive = "dist/ask-bridge-${{ matrix.target }}.${{ matrix.ext }}"
           if ("${{ matrix.ext }}" -eq "zip") {
             Compress-Archive -Path $binary -DestinationPath $archive -Force
           } else {
@@ -57,7 +57,7 @@ jobs:
           "$hash  $(Split-Path $archive -Leaf)" | Out-File "$archive.sha256" -Encoding ascii
       - uses: actions/upload-artifact@v4
         with:
-          name: ask-chatgpt-${{ matrix.target }}
+          name: ask-bridge-${{ matrix.target }}
           path: dist/*
 
   publish-release:

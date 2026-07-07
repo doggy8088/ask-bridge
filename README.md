@@ -1,4 +1,4 @@
-# Ask ChatGPT Rust 版
+# Ask Bridge 🦀
 
 `ask` 是以 Rust 撰寫的輕量命令列工具，可透過真實 Chrome 瀏覽器自動操作 ChatGPT 與 Gemini。它使用 Model Context Protocol MCP 與 Chrome DevTools Protocol CDP，並透過內建的 `doggy8088/mcp-cli` Rust library dependency 搭配 `chrome-devtools-mcp` 控制 Chrome、輸入 prompt、送出訊息，並將回覆輸出到終端機。預設 provider 為 ChatGPT，可用 `--provider gemini` 切換到 Gemini。
 
@@ -13,7 +13,7 @@
 - **100% Rust 核心**：快速、輕量，編譯後即可執行。
 - **多 provider 支援**：使用 `--provider chatgpt|gemini` 選擇 ChatGPT 或 Gemini。
 - **真實瀏覽器自動化**：直接控制監聽 `9223` port 的 Chrome debug profile。
-- **持久登入狀態**：使用專屬本機 profile 目錄 `~/.config/ask-chatgpt/chrome-profile`，避免重複登入。
+- **持久登入狀態**：使用專屬本機 profile 目錄 `~/.config/ask-bridge/chrome-profile`，避免重複登入。
 - **回覆輸出**：所選 provider 產生回覆時，將內容輸出到終端機。
 - **思考動畫**：等待 provider 回覆時，在終端機顯示旋轉 spinner，開始輸出內容後自動清除。
 - **智慧分頁管理**：可重用既有 provider 分頁、聚焦分頁，或開啟新分頁，避免分頁過度增加。
@@ -54,7 +54,7 @@ make install
 cargo build --release
 ```
 
-編譯後的 binary 會位於 `target/release/ask-chatgpt`。
+編譯後的 binary 會位於 `target/release/ask-bridge`。
 
 ## 使用方式
 
@@ -238,12 +238,12 @@ ask --provider gemini open
 ask close
 ```
 
-`close` 只會關閉使用 `~/.config/ask-chatgpt/chrome-profile` 且監聽 debug port `9223` 的 `ask` Chrome instance；若該 port 被非 `ask` Chrome 程序占用，會回報錯誤而不會關閉它。
+`close` 只會關閉使用 `~/.config/ask-bridge/chrome-profile` 且監聽 debug port `9223` 的 `ask` Chrome instance；若該 port 被非 `ask` Chrome 程序占用，會回報錯誤而不會關閉它。
 
 ## 運作原理
 
-1. **瀏覽器初始化**：`ask` 會檢查 Chrome 是否正在監聽 debug port `9223`。若沒有，會以專屬 profile 目錄 `~/.config/ask-chatgpt/chrome-profile` 啟動 Google Chrome。
-2. **MCP Bridge 設定**：啟動時會自動寫入 `~/.config/ask-chatgpt/mcp_servers.json`，預設設定 Chrome DevTools MCP server，使用 `chrome-devtools-mcp@latest` 與 `--browser-url=http://127.0.0.1:9223`。
+1. **瀏覽器初始化**：`ask` 會檢查 Chrome 是否正在監聽 debug port `9223`。若沒有，會以專屬 profile 目錄 `~/.config/ask-bridge/chrome-profile` 啟動 Google Chrome。
+2. **MCP Bridge 設定**：啟動時會自動寫入 `~/.config/ask-bridge/mcp_servers.json`，預設設定 Chrome DevTools MCP server，使用 `chrome-devtools-mcp@latest` 與 `--browser-url=http://127.0.0.1:9223`。
 3. **Client 呼叫**：`ask` 透過內建的 `doggy8088/mcp-cli` Rust library dependency 呼叫 MCP tools，例如 `list_pages`、`select_page`、`type_text` 與 `evaluate_script`，不依賴系統上的外部 `mcp-cli` 命令。
 4. **狀態輪詢**：provider 產生回覆期間，工具會以 JavaScript 檢查送出與停止按鈕狀態，擷取回覆元素的文字內容，並輸出到 `stdout`。
 
@@ -251,7 +251,6 @@ ask close
 
 - [快速開始](docs/quick-start.md)
 - [背景 Chrome 隱形技術與實作原理](docs/headless-techniques.md)
-- [English README](README.en.md)
 
 ## 授權
 

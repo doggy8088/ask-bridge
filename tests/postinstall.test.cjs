@@ -28,13 +28,13 @@ test('rejects unsupported platforms', () => {
 });
 
 test('formats artifact names and release URLs', () => {
-  assert.equal(artifactName('x86_64-unknown-linux-gnu'), 'ask-chatgpt-x86_64-unknown-linux-gnu.tar.xz');
-  assert.equal(artifactName('x86_64-pc-windows-msvc'), 'ask-chatgpt-x86_64-pc-windows-msvc.zip');
-  assert.equal(releaseBaseUrl('1.2.3'), 'https://github.com/REPLACE_ME/ask-chatgpt/releases/download/v1.2.3');
+  assert.equal(artifactName('x86_64-unknown-linux-gnu'), 'ask-bridge-x86_64-unknown-linux-gnu.tar.xz');
+  assert.equal(artifactName('x86_64-pc-windows-msvc'), 'ask-bridge-x86_64-pc-windows-msvc.zip');
+  assert.equal(releaseBaseUrl('1.2.3'), 'https://github.com/REPLACE_ME/ask-bridge/releases/download/v1.2.3');
 });
 
 test('verifies sha256 checksums', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'ask-chatgpt-'));
+  const dir = mkdtempSync(join(tmpdir(), 'ask-bridge-'));
   const file = join(dir, 'sample.txt');
   writeFileSync(file, 'hello');
   const digest = sha256(file);

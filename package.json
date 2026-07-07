@@ -1,5 +1,5 @@
 {
-  "name": "ask-chatgpt",
+  "name": "ask-bridge",
   "version": "0.1.0",
   "description": "Automate ChatGPT or Gemini from the command line through Chrome.",
   "bin": {
@@ -19,7 +19,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/REPLACE_ME/ask-chatgpt.git"
+    "url": "git+https://github.com/REPLACE_ME/ask-bridge.git"
   },
   "keywords": [
     "chatgpt",

@@ -37,7 +37,7 @@ ask login
 Chrome 會使用專屬 profile 開啟，profile 路徑為：
 
 ```text
-~/.config/ask-chatgpt/chrome-profile
+~/.config/ask-bridge/chrome-profile
 ```
 
 在瀏覽器視窗登入 ChatGPT 後，回到終端機按 Enter。
@@ -154,7 +154,7 @@ ask close
 啟動時，`ask` 會把 MCP 設定寫入：
 
 ```text
-~/.config/ask-chatgpt/mcp_servers.json
+~/.config/ask-bridge/mcp_servers.json
 ```
 
 預設 server 是 Chrome DevTools MCP：

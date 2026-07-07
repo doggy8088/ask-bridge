@@ -18,9 +18,9 @@ const { join } = require('node:path');
 const { URL } = require('node:url');
 
 const PACKAGE_ROOT = join(__dirname, '..');
-const BINARY_NAME = "ask-chatgpt";
+const BINARY_NAME = "ask-bridge";
 const GITHUB_OWNER = "REPLACE_ME";
-const GITHUB_REPO = "ask-chatgpt";
+const GITHUB_REPO = "ask-bridge";
 const BIN_DIR = join(__dirname, `${BINARY_NAME}-bin`);
 const BIN_NAME = process.platform === 'win32' ? `${BINARY_NAME}.exe` : BINARY_NAME;
 const DEST = join(BIN_DIR, BIN_NAME);

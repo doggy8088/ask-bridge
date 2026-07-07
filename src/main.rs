@@ -273,7 +273,7 @@ struct Page {
 
 fn write_mcp_config(quiet_mcp: bool, headless: bool) -> Result<String, String> {
     let mut config_dir = home::home_dir().ok_or("Could not locate home directory")?;
-    config_dir.push(".config/ask-chatgpt");
+    config_dir.push(".config/ask-bridge");
     std::fs::create_dir_all(&config_dir)
         .map_err(|e| format!("Failed to create config directory: {}", e))?;
 
@@ -350,7 +350,7 @@ fn write_mcp_config(quiet_mcp: bool, headless: bool) -> Result<String, String> {
 
 fn chrome_profile_path() -> Result<String, String> {
     let mut profile_dir = home::home_dir().ok_or("Could not locate home directory")?;
-    profile_dir.push(".config/ask-chatgpt/chrome-profile");
+    profile_dir.push(".config/ask-bridge/chrome-profile");
     std::fs::create_dir_all(&profile_dir)
         .map_err(|e| format!("Failed to create chrome profile directory: {}", e))?;
 
@@ -405,7 +405,7 @@ fn start_chrome_if_needed(headless: bool, verbose: bool) -> Result<(), String> {
         .arg("--no-default-browser-check");
 
     if headless {
-        cmd.arg("--ask-chatgpt-background")
+        cmd.arg("--ask-bridge-background")
             .arg("--disable-blink-features=AutomationControlled")
             .arg("--window-size=1440,1200")
             .arg("--window-position=-2000,-2000");
@@ -480,7 +480,7 @@ fn is_debug_chrome_background(profile_path: &str) -> bool {
 
     debug_port_listener_pids().iter().any(|pid| {
         process_command(pid)
-            .map(|cmd| cmd.contains(&profile_arg) && cmd.contains("--ask-chatgpt-background"))
+            .map(|cmd| cmd.contains(&profile_arg) && cmd.contains("--ask-bridge-background"))
             .unwrap_or(false)
     })
 }

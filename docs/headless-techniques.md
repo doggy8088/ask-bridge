@@ -1,6 +1,6 @@
 # macOS 完美的背景 Chrome 隱形技術與實作原理 🦀
 
-在 `ask-chatgpt` 中，為了解決網頁自動化工具經常面臨的 **Cloudflare Bot 偵測**與 **macOS 視窗閃爍**問題，我們開發了一套極具巧思且穩定的「真．背景隱形（Headless Bypass）」技術。
+在 `ask-bridge` 中，為了解決網頁自動化工具經常面臨的 **Cloudflare Bot 偵測**與 **macOS 視窗閃爍**問題，我們開發了一套極具巧思且穩定的「真．背景隱形（Headless Bypass）」技術。
 
 本文件詳細記錄了這套技術的挑戰、核心原理與最終解決方案，供未來開發與維護參考。
 

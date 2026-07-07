@@ -5,7 +5,7 @@ const { spawnSync } = require('node:child_process');
 const { existsSync } = require('node:fs');
 const { join } = require('node:path');
 
-const BINARY_NAME = "ask-chatgpt";
+const BINARY_NAME = "ask-bridge";
 const exe = process.platform === 'win32' ? `${BINARY_NAME}.exe` : BINARY_NAME;
 const bin = join(__dirname, `${BINARY_NAME}-bin`, exe);
 

@@ -18,7 +18,7 @@ We have successfully implemented the requested enhancements for specifying targe
 
 ## Code Diff
 
-Here is the diff of the changes made to [main.rs](file:///Users/will/projects/ask-chatgpt/src/main.rs):
+Here is the diff of the changes made to [main.rs](file:///Users/will/projects/ask-bridge/src/main.rs):
 
 ```diff
 @@ -32,6 +32,10 @@
