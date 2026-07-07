@@ -2857,6 +2857,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
             Commands::Close => unreachable!("close command is handled before Chrome startup"),
+            Commands::Config => unreachable!("config command is handled before Chrome startup"),
             Commands::Dump => {
                 let list_res = call_mcp_tool(&config_path, "list_pages", serde_json::json!({}))?;
                 println!("All pages: {:?}", list_res);
