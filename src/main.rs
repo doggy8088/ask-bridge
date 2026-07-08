@@ -73,7 +73,52 @@ impl Provider {
     fn login_check_js(self) -> &'static str {
         match self {
             Provider::ChatGpt => {
-                r#"() => document.querySelector('[data-testid="login-button"]') === null"#
+                r#"() => {
+                    const isVisible = (el) => {
+                        if (!el) return false;
+                        const style = window.getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        return style.display !== 'none' &&
+                            style.visibility !== 'hidden' &&
+                            style.opacity !== '0' &&
+                            rect.width > 0 &&
+                            rect.height > 0;
+                    };
+
+                    const textFor = (el) => [
+                        el.getAttribute('aria-label'),
+                        el.getAttribute('title'),
+                        el.textContent
+                    ].filter(Boolean).join(' ').trim();
+
+                    const visibleAuthButton = Array.from(document.querySelectorAll('a, button'))
+                        .some((el) => {
+                            if (!isVisible(el)) return false;
+                            const text = textFor(el);
+                            return /^(log in|login|sign in|sign up|登入|登錄|登录|註冊|注册)$/i.test(text);
+                        });
+
+                    const composer = document.querySelector('#prompt-textarea') ||
+                        document.querySelector('[data-testid="composer-text-input"]') ||
+                        document.querySelector('textarea[placeholder*="Message"]') ||
+                        document.querySelector('textarea[placeholder*="訊息"]') ||
+                        document.querySelector('[contenteditable="true"]');
+
+                    const accountMenu = document.querySelector('[data-testid="profile-button"]') ||
+                        document.querySelector('[data-testid="account-menu-button"]') ||
+                        document.querySelector('[data-testid="user-menu-button"]') ||
+                        document.querySelector('button[aria-label*="Profile"]') ||
+                        document.querySelector('button[aria-label*="profile"]') ||
+                        document.querySelector('button[aria-label*="Account"]') ||
+                        document.querySelector('button[aria-label*="account"]') ||
+                        document.querySelector('button[aria-label*="User"]') ||
+                        document.querySelector('button[aria-label*="user"]') ||
+                        document.querySelector('button[aria-label*="帳戶"]') ||
+                        document.querySelector('button[aria-label*="使用者"]');
+
+                    const authPath = /\/(auth|login|signup)(\/|$)/i.test(window.location.pathname);
+                    return Boolean(accountMenu) || (Boolean(composer) && !authPath && !visibleAuthButton);
+                }"#
             }
             Provider::Gemini => {
                 r#"() => {
@@ -615,12 +660,13 @@ fn start_chrome_if_needed(headless: bool, verbose: bool) -> Result<(), String> {
     let profile_path = chrome_profile_path()?;
 
     if TcpStream::connect("127.0.0.1:9223").is_ok() {
-        if !headless || is_debug_chrome_background(&profile_path) {
+        let ask_pids = ask_chrome_pids_on_debug_port(&profile_path);
+        if !ask_pids.is_empty() {
             if headless {
                 // Force hide any existing background Chrome PIDs asynchronously just in case they are currently visible
                 #[cfg(target_os = "macos")]
                 {
-                    let pids = debug_port_listener_pids();
+                    let pids = ask_pids.clone();
                     thread::spawn(move || {
                         for pid_str in pids {
                             if let Ok(pid) = pid_str.parse::<u32>() {
@@ -634,15 +680,27 @@ fn start_chrome_if_needed(headless: bool, verbose: bool) -> Result<(), String> {
                     });
                 }
             }
+            if verbose && headless && !is_debug_chrome_background(&profile_path) {
+                println!(
+                    "Reusing existing ask-bridge Chrome on port 9223. Run `ask-bridge close` if you want to restart it in background mode."
+                );
+            }
             return Ok(());
         }
 
-        if verbose {
-            println!(
-                "Found ask-bridge Chrome on port 9223 running visibly. Restarting in background..."
-            );
+        if debug_port_listener_pids().is_empty() {
+            if verbose {
+                println!(
+                    "Port 9223 is listening, but ask-bridge could not identify the listener process. Reusing it."
+                );
+            }
+            return Ok(());
         }
-        stop_ask_chrome_on_debug_port(&profile_path)?;
+
+        return Err(
+            "Port 9223 is already used by a non-ask Chrome process. Stop it or use a different debugging port."
+                .to_string(),
+        );
     }
 
     if verbose {
@@ -705,6 +763,39 @@ fn start_chrome_if_needed(headless: bool, verbose: bool) -> Result<(), String> {
     }
 
     Err("Timed out waiting for Chrome to start on port 9223".to_string())
+}
+
+fn normalize_profile_match_text(value: &str) -> String {
+    let normalized = value.replace('\\', "/").replace(['"', '\''], "");
+
+    #[cfg(target_os = "windows")]
+    {
+        normalized.to_ascii_lowercase()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        normalized
+    }
+}
+
+fn command_uses_profile(command: &str, profile_path: &str) -> bool {
+    let command = normalize_profile_match_text(command);
+    let profile_path = normalize_profile_match_text(profile_path);
+
+    command.contains(&format!("--user-data-dir={}", profile_path))
+        || command.contains(&format!("--user-data-dir {}", profile_path))
+}
+
+fn ask_chrome_pids_on_debug_port(profile_path: &str) -> Vec<String> {
+    debug_port_listener_pids()
+        .into_iter()
+        .filter(|pid| {
+            process_command(pid)
+                .map(|cmd| command_uses_profile(&cmd, profile_path))
+                .unwrap_or(false)
+        })
+        .collect()
 }
 
 fn debug_port_listener_pids() -> Vec<String> {
@@ -815,17 +906,16 @@ fn process_command(pid: &str) -> Option<String> {
 }
 
 fn is_debug_chrome_background(profile_path: &str) -> bool {
-    let profile_arg = format!("--user-data-dir={}", profile_path);
-
-    debug_port_listener_pids().iter().any(|pid| {
-        process_command(pid)
-            .map(|cmd| cmd.contains(&profile_arg) && cmd.contains("--ask-bridge-background"))
-            .unwrap_or(false)
-    })
+    ask_chrome_pids_on_debug_port(profile_path)
+        .iter()
+        .any(|pid| {
+            process_command(pid)
+                .map(|cmd| cmd.contains("--ask-bridge-background"))
+                .unwrap_or(false)
+        })
 }
 
 fn close_ask_chrome_on_debug_port(profile_path: &str) -> Result<bool, String> {
-    let profile_arg = format!("--user-data-dir={}", profile_path);
     let listener_pids = debug_port_listener_pids();
     if listener_pids.is_empty() {
         return Ok(false);
@@ -835,7 +925,7 @@ fn close_ask_chrome_on_debug_port(profile_path: &str) -> Result<bool, String> {
         .into_iter()
         .filter(|pid| {
             process_command(pid)
-                .map(|cmd| cmd.contains(&profile_arg))
+                .map(|cmd| command_uses_profile(&cmd, profile_path))
                 .unwrap_or(false)
         })
         .collect();
@@ -847,14 +937,14 @@ fn close_ask_chrome_on_debug_port(profile_path: &str) -> Result<bool, String> {
         );
     }
 
-    for pid in ask_pids {
+    for pid in &ask_pids {
         #[cfg(target_os = "windows")]
         {
-            let _ = Command::new("taskkill").args(["/F", "/PID", &pid]).status();
+            let _ = Command::new("taskkill").arg("/PID").arg(pid).status();
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = Command::new("kill").args(["-TERM", &pid]).status();
+            let _ = Command::new("kill").args(["-TERM", pid]).status();
         }
     }
 
@@ -865,11 +955,25 @@ fn close_ask_chrome_on_debug_port(profile_path: &str) -> Result<bool, String> {
         thread::sleep(Duration::from_millis(100));
     }
 
-    Err("Timed out waiting for existing ask-bridge Chrome to stop".to_string())
-}
+    #[cfg(target_os = "windows")]
+    {
+        for pid in &ask_pids {
+            let _ = Command::new("taskkill")
+                .arg("/F")
+                .arg("/PID")
+                .arg(pid)
+                .status();
+        }
 
-fn stop_ask_chrome_on_debug_port(profile_path: &str) -> Result<(), String> {
-    close_ask_chrome_on_debug_port(profile_path).map(|_| ())
+        for _ in 0..50 {
+            if TcpStream::connect("127.0.0.1:9223").is_err() {
+                return Ok(true);
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    Err("Timed out waiting for existing ask-bridge Chrome to stop".to_string())
 }
 
 fn call_mcp_tool(config_path: &str, tool: &str, args: Value) -> Result<Value, String> {
@@ -1297,6 +1401,30 @@ mod tests {
     #[test]
     fn returns_none_when_linux_chrome_is_missing() {
         assert_eq!(find_linux_chrome_path(None, &[]), None);
+    }
+
+    #[test]
+    fn matches_profile_argument_with_quotes_and_slashes() {
+        let command = r#""C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9223 "--user-data-dir=C:\Users\Will\.config\ask-bridge\chrome-profile""#;
+        let profile_path = r"C:/Users/Will/.config/ask-bridge/chrome-profile";
+
+        assert!(command_uses_profile(command, profile_path));
+    }
+
+    #[test]
+    fn matches_profile_argument_when_value_is_separated_by_space() {
+        let command = r#"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=9223 --user-data-dir /Users/will/.config/ask-bridge/chrome-profile"#;
+        let profile_path = "/Users/will/.config/ask-bridge/chrome-profile";
+
+        assert!(command_uses_profile(command, profile_path));
+    }
+
+    #[test]
+    fn rejects_different_profile_argument() {
+        let command = r#"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --remote-debugging-port=9223 --user-data-dir=/Users/will/.config/other/chrome-profile"#;
+        let profile_path = "/Users/will/.config/ask-bridge/chrome-profile";
+
+        assert!(!command_uses_profile(command, profile_path));
     }
 }
 
