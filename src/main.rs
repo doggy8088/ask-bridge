@@ -109,8 +109,8 @@ impl Provider {
             }
             Provider::Claude => {
                 r#"() => {
-                    return document.querySelector('div[contenteditable="true"].ProseMirror') !== null ||
-                           document.querySelector('fieldset [contenteditable="true"]') !== null ||
+                    return document.querySelector('div[contenteditable="true"][data-testid="chat-input"]') !== null ||
+                           document.querySelector('div[contenteditable="true"].ProseMirror') !== null ||
                            document.querySelector('[data-testid="login-with-google"]') !== null ||
                            window.location.pathname.startsWith('/login') ||
                            /Sign in|登入/.test(document.body.innerText || '');
@@ -208,8 +208,8 @@ impl Provider {
             }
             Provider::Claude => {
                 r#"() => {
-                    const composer = document.querySelector('div[contenteditable="true"].ProseMirror') ||
-                        document.querySelector('fieldset [contenteditable="true"]');
+                    const composer = document.querySelector('div[contenteditable="true"][data-testid="chat-input"]') ||
+                        document.querySelector('div[contenteditable="true"].ProseMirror');
                     const loginIndicator = document.querySelector('[data-testid="login-with-google"]') !== null ||
                         window.location.pathname.startsWith('/login');
                     return Boolean(composer) && !loginIndicator;
@@ -222,7 +222,7 @@ impl Provider {
         match self {
             Provider::ChatGpt => "[data-message-author-role=\"assistant\"], .agent-turn",
             Provider::Gemini => "model-response",
-            Provider::Claude => "div[data-is-streaming], .font-claude-message",
+            Provider::Claude => ".font-claude-response",
         }
     }
 
@@ -232,7 +232,7 @@ impl Provider {
                 "[data-message-author-role=\"assistant\"], .agent-turn, model-response, .model-response, [data-test-id*=\"response\"], [data-testid*=\"response\"]"
             }
             Provider::Gemini => "model-response",
-            Provider::Claude => "div[data-is-streaming], .font-claude-message",
+            Provider::Claude => ".font-claude-response",
         }
     }
 
@@ -242,7 +242,7 @@ impl Provider {
             Provider::Gemini => {
                 "message-content, .markdown, structured-content-container.model-response-text"
             }
-            Provider::Claude => ".font-claude-message, .standard-markdown",
+            Provider::Claude => ".standard-markdown, .font-claude-response-body",
         }
     }
 
@@ -258,9 +258,9 @@ impl Provider {
             }
             Provider::Claude => {
                 r#"[
+                    "div[contenteditable=\"true\"][data-testid=\"chat-input\"]",
                     "div[contenteditable=\"true\"].ProseMirror",
-                    "div[aria-label*=\"Claude\"][contenteditable=\"true\"]",
-                    "fieldset [contenteditable=\"true\"]"
+                    "div[aria-label*=\"Claude\"][contenteditable=\"true\"]"
                 ]"#
             }
         }
@@ -2027,7 +2027,7 @@ fn click_latest_copy_button(config_path: &str, provider: Provider) -> Result<(),
                     if (el.closest('pre, code, [class*="code"], [data-testid*="code"]')) return -1;
                     if (/copy-turn-action-button/i.test(label)) return 100;
                     if (/response|回應|回答|reply/i.test(label)) return 90;
-                    if (el.closest('model-response, response-container, [data-message-author-role="assistant"], .agent-turn, [data-is-streaming], .font-claude-message')) return 50;
+                    if (el.closest('model-response, response-container, [data-message-author-role="assistant"], .agent-turn, [data-is-streaming], .font-claude-response')) return 50;
                     return 10;
                 };
                 const messages = Array.from(document.querySelectorAll(__RESPONSE_SELECTOR__));
