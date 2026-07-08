@@ -431,7 +431,7 @@ fn write_mcp_config(quiet_mcp: bool, headless: bool) -> Result<String, String> {
     config_dir.push("mcp_servers.json");
     let config_path = config_dir.to_string_lossy().to_string();
 
-    let mut chrome_devtools_server = if quiet_mcp {
+    let mut chrome_devtools_server = if quiet_mcp && !cfg!(target_os = "windows") {
         let mut sh_cmd = format!(
             "exec npx -y chrome-devtools-mcp@latest --browser-url=http://127.0.0.1:9223 --no-usage-statistics --no-performance-crux --logFile \"{}\"",
             log_path
@@ -461,7 +461,7 @@ fn write_mcp_config(quiet_mcp: bool, headless: bool) -> Result<String, String> {
         mcp_args.push(log_path);
 
         serde_json::json!({
-            "command": "npx",
+            "command": if cfg!(target_os = "windows") { "npx.cmd" } else { "npx" },
             "args": mcp_args
         })
     };
