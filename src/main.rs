@@ -494,7 +494,125 @@ fn write_mcp_config(quiet_mcp: bool, headless: bool) -> Result<String, String> {
     Ok(config_path)
 }
 
+fn is_wsl() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(osrelease) = std::fs::read_to_string("/proc/sys/kernel/osrelease") {
+            let lower = osrelease.to_lowercase();
+            if lower.contains("microsoft") || lower.contains("wsl") {
+                return true;
+            }
+        }
+        if let Ok(version) = std::fs::read_to_string("/proc/version") {
+            let lower = version.to_lowercase();
+            if lower.contains("microsoft") || lower.contains("wsl") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn is_windows_chrome(path: &str) -> bool {
+    path.to_lowercase().ends_with(".exe")
+}
+
+#[cfg(target_os = "linux")]
+fn get_wsl_windows_path(env_var: &str) -> Option<String> {
+    let output = std::process::Command::new("cmd.exe")
+        .args(&["/c", &format!("echo %{}%", env_var)])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let win_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if win_path.is_empty() || win_path == format!("%{}%", env_var) {
+        return None;
+    }
+    let path_output = std::process::Command::new("wslpath")
+        .arg(&win_path)
+        .output()
+        .ok()?;
+    if !path_output.status.success() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&path_output.stdout)
+            .trim()
+            .to_string(),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn get_wsl_windows_local_appdata() -> Option<String> {
+    let output = std::process::Command::new("cmd.exe")
+        .args(&["/c", "echo %LOCALAPPDATA%"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let win_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if win_path.is_empty() || win_path.contains("%LOCALAPPDATA%") {
+        return None;
+    }
+    let path_output = std::process::Command::new("wslpath")
+        .arg(&win_path)
+        .output()
+        .ok()?;
+    if !path_output.status.success() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&path_output.stdout)
+            .trim()
+            .to_string(),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn convert_to_windows_path(linux_path: &str) -> Option<String> {
+    let output = std::process::Command::new("wslpath")
+        .args(&["-w", linux_path])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 fn chrome_profile_path() -> Result<String, String> {
+    let mut use_wsl_win_profile = false;
+    #[cfg(target_os = "linux")]
+    {
+        if is_wsl() {
+            if let Ok(chrome_path) = find_chrome_path() {
+                if is_windows_chrome(&chrome_path) {
+                    use_wsl_win_profile = true;
+                }
+            }
+        }
+    }
+
+    if use_wsl_win_profile {
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(appdata_linux) = get_wsl_windows_local_appdata() {
+                let mut profile_dir = std::path::PathBuf::from(appdata_linux);
+                profile_dir.push("ask-bridge/chrome-profile");
+                std::fs::create_dir_all(&profile_dir).map_err(|e| {
+                    format!(
+                        "Failed to create chrome profile directory in Windows AppData: {}",
+                        e
+                    )
+                })?;
+                return Ok(profile_dir.to_string_lossy().to_string());
+            }
+        }
+    }
+
     let mut profile_dir = home::home_dir().ok_or("Could not locate home directory")?;
     profile_dir.push(".config/ask-bridge/chrome-profile");
     std::fs::create_dir_all(&profile_dir)
@@ -504,6 +622,17 @@ fn chrome_profile_path() -> Result<String, String> {
 }
 
 fn find_chrome_path() -> Result<String, String> {
+    if let Ok(env_path) = std::env::var("ASK_BRIDGE_CHROME") {
+        if !env_path.is_empty() {
+            return Ok(env_path);
+        }
+    }
+    if let Ok(env_path) = std::env::var("CHROME_PATH") {
+        if !env_path.is_empty() {
+            return Ok(env_path);
+        }
+    }
+
     #[cfg(target_os = "windows")]
     {
         // 1. Program Files
@@ -545,11 +674,84 @@ fn find_chrome_path() -> Result<String, String> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        let path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-        if std::path::Path::new(path).exists() {
-            Ok(path.to_string())
-        } else {
+        #[cfg(target_os = "macos")]
+        {
+            let path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+            if std::path::Path::new(path).exists() {
+                return Ok(path.to_string());
+            }
             Err("Google Chrome not found at /Applications/Google Chrome.app".to_string())
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            if is_wsl() {
+                let common_paths = [
+                    "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe",
+                    "/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+                ];
+                for path in &common_paths {
+                    if std::path::Path::new(path).exists() {
+                        return Ok(path.to_string());
+                    }
+                }
+
+                if let Some(pf_linux) = get_wsl_windows_path("ProgramFiles") {
+                    let path = format!("{}/Google/Chrome/Application/chrome.exe", pf_linux);
+                    if std::path::Path::new(&path).exists() {
+                        return Ok(path);
+                    }
+                }
+                if let Some(pf86_linux) = get_wsl_windows_path("ProgramFiles(x86)") {
+                    let path = format!("{}/Google/Chrome/Application/chrome.exe", pf86_linux);
+                    if std::path::Path::new(&path).exists() {
+                        return Ok(path);
+                    }
+                }
+                if let Some(local_linux) = get_wsl_windows_path("LOCALAPPDATA") {
+                    let path = format!("{}/Google/Chrome/Application/chrome.exe", local_linux);
+                    if std::path::Path::new(&path).exists() {
+                        return Ok(path);
+                    }
+                }
+            }
+
+            let linux_paths = [
+                "/usr/bin/google-chrome",
+                "/usr/bin/google-chrome-stable",
+                "/usr/bin/chromium",
+                "/usr/bin/chromium-browser",
+                "/usr/bin/chrome",
+            ];
+            for path in &linux_paths {
+                if std::path::Path::new(path).exists() {
+                    return Ok(path.to_string());
+                }
+            }
+
+            for cmd in &[
+                "google-chrome",
+                "google-chrome-stable",
+                "chromium",
+                "chromium-browser",
+                "chrome",
+            ] {
+                if let Ok(output) = std::process::Command::new("which").arg(cmd).output() {
+                    if output.status.success() {
+                        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        if !path.is_empty() && std::path::Path::new(&path).exists() {
+                            return Ok(path);
+                        }
+                    }
+                }
+            }
+
+            Err("Google Chrome or Chromium was not found on Linux. Please install it or set ASK_BRIDGE_CHROME environment variable.".to_string())
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            Err("Unsupported operating system for Google Chrome auto-detection.".to_string())
         }
     }
 }
@@ -597,9 +799,25 @@ fn start_chrome_if_needed(headless: bool, verbose: bool) -> Result<(), String> {
 
     let chrome_path = find_chrome_path()?;
 
+    let is_win_chrome = is_windows_chrome(&chrome_path);
+    let chrome_profile_arg = if is_win_chrome {
+        #[cfg(target_os = "linux")]
+        {
+            let win_profile_path =
+                convert_to_windows_path(&profile_path).unwrap_or_else(|| profile_path.clone());
+            format!("--user-data-dir={}", win_profile_path)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            format!("--user-data-dir={}", profile_path)
+        }
+    } else {
+        format!("--user-data-dir={}", profile_path)
+    };
+
     let mut cmd = Command::new(&chrome_path);
     cmd.arg("--remote-debugging-port=9223")
-        .arg(format!("--user-data-dir={}", profile_path))
+        .arg(chrome_profile_arg)
         .arg("--no-first-run")
         .arg("--no-default-browser-check");
 
@@ -677,19 +895,48 @@ fn debug_port_listener_pids() -> Vec<String> {
 
     #[cfg(not(target_os = "windows"))]
     {
+        let mut pids = Vec::new();
         let output = Command::new("lsof")
             .args(["-tiTCP:9223", "-sTCP:LISTEN"])
             .output();
 
-        match output {
-            Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .map(str::to_string)
-                .collect(),
-            _ => Vec::new(),
+        if let Ok(out) = output {
+            if out.status.success() {
+                for line in String::from_utf8_lossy(&out.stdout).lines() {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        pids.push(trimmed.to_string());
+                    }
+                }
+            }
         }
+
+        #[cfg(target_os = "linux")]
+        {
+            if is_wsl() {
+                let output = Command::new("cmd.exe")
+                    .args(["/c", "netstat -ano -p tcp"])
+                    .output();
+                if let Ok(out) = output {
+                    if out.status.success() {
+                        let stdout = String::from_utf8_lossy(&out.stdout);
+                        for line in stdout.lines() {
+                            let line = line.trim();
+                            if line.contains(":9223") && line.contains("LISTENING") {
+                                if let Some(pid) = line.split_whitespace().last() {
+                                    let pid_str = pid.to_string();
+                                    if !pids.contains(&pid_str) {
+                                        pids.push(pid_str);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        pids
     }
 }
 
@@ -744,31 +991,110 @@ fn process_command(pid: &str) -> Option<String> {
 
     #[cfg(not(target_os = "windows"))]
     {
+        let mut cmd_opt = None;
         let output = Command::new("ps")
             .args(["-p", pid, "-o", "command="])
-            .output()
-            .ok()?;
+            .output();
 
-        if !output.status.success() {
-            return None;
+        if let Ok(out) = output {
+            if out.status.success() {
+                let cmd = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !cmd.is_empty() {
+                    cmd_opt = Some(cmd);
+                }
+            }
         }
 
-        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        #[cfg(target_os = "linux")]
+        {
+            if cmd_opt.is_none() && is_wsl() {
+                let output = Command::new("wmic.exe")
+                    .args([
+                        "process",
+                        "where",
+                        &format!("processid={}", pid),
+                        "get",
+                        "commandline",
+                    ])
+                    .output();
+                if let Ok(out) = output {
+                    if out.status.success() {
+                        let stdout = String::from_utf8_lossy(&out.stdout);
+                        let mut cmd_lines = stdout.lines().skip(1);
+                        if let Some(cmd) = cmd_lines.next() {
+                            let cmd = cmd.trim();
+                            if !cmd.is_empty() {
+                                cmd_opt = Some(cmd.to_string());
+                            }
+                        }
+                    }
+                }
+
+                if cmd_opt.is_none() {
+                    let output = Command::new("powershell.exe")
+                        .args([
+                            "-NoProfile",
+                            "-Command",
+                            &format!(
+                                "(Get-CimInstance Win32_Process -Filter 'ProcessId = {}').CommandLine",
+                                pid
+                            ),
+                        ])
+                        .output();
+                    if let Ok(out) = output {
+                        if out.status.success() {
+                            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                            if !stdout.is_empty() {
+                                cmd_opt = Some(stdout);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        cmd_opt
     }
 }
 
 fn is_debug_chrome_background(profile_path: &str) -> bool {
-    let profile_arg = format!("--user-data-dir={}", profile_path);
+    let profile_arg_linux = format!("--user-data-dir={}", profile_path);
+    let mut profile_arg_win = None;
+    #[cfg(target_os = "linux")]
+    {
+        if is_wsl() {
+            if let Some(win_profile) = convert_to_windows_path(profile_path) {
+                profile_arg_win = Some(format!("--user-data-dir={}", win_profile));
+            }
+        }
+    }
 
     debug_port_listener_pids().iter().any(|pid| {
         process_command(pid)
-            .map(|cmd| cmd.contains(&profile_arg) && cmd.contains("--ask-bridge-background"))
+            .map(|cmd| {
+                let contains_profile = cmd.contains(&profile_arg_linux)
+                    || profile_arg_win
+                        .as_ref()
+                        .map(|arg| cmd.contains(arg))
+                        .unwrap_or(false);
+                contains_profile && cmd.contains("--ask-bridge-background")
+            })
             .unwrap_or(false)
     })
 }
 
 fn close_ask_chrome_on_debug_port(profile_path: &str) -> Result<bool, String> {
-    let profile_arg = format!("--user-data-dir={}", profile_path);
+    let profile_arg_linux = format!("--user-data-dir={}", profile_path);
+    let mut profile_arg_win = None;
+    #[cfg(target_os = "linux")]
+    {
+        if is_wsl() {
+            if let Some(win_profile) = convert_to_windows_path(profile_path) {
+                profile_arg_win = Some(format!("--user-data-dir={}", win_profile));
+            }
+        }
+    }
+
     let listener_pids = debug_port_listener_pids();
     if listener_pids.is_empty() {
         return Ok(false);
@@ -778,7 +1104,13 @@ fn close_ask_chrome_on_debug_port(profile_path: &str) -> Result<bool, String> {
         .into_iter()
         .filter(|pid| {
             process_command(pid)
-                .map(|cmd| cmd.contains(&profile_arg))
+                .map(|cmd| {
+                    cmd.contains(&profile_arg_linux)
+                        || profile_arg_win
+                            .as_ref()
+                            .map(|arg| cmd.contains(arg))
+                            .unwrap_or(false)
+                })
                 .unwrap_or(false)
         })
         .collect();
@@ -797,7 +1129,23 @@ fn close_ask_chrome_on_debug_port(profile_path: &str) -> Result<bool, String> {
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = Command::new("kill").args(["-TERM", &pid]).status();
+            let mut killed = false;
+            #[cfg(target_os = "linux")]
+            {
+                if is_wsl() {
+                    if let Ok(status) = Command::new("taskkill.exe")
+                        .args(["/F", "/PID", &pid])
+                        .status()
+                    {
+                        if status.success() {
+                            killed = true;
+                        }
+                    }
+                }
+            }
+            if !killed {
+                let _ = Command::new("kill").args(["-TERM", &pid]).status();
+            }
         }
     }
 
