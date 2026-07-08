@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="zh-TW" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark light" />
+  <title>ask-bridge — 把終端機接上 ChatGPT 與 Gemini</title>
+  <meta name="description" content="ask-bridge 是以 Rust 撰寫的命令列研究橋接器，透過真實 Chrome 自動操作 ChatGPT 或 Gemini，把 prompt 送進網站、把回覆取回終端機。" />
+
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="ask-bridge — 把終端機接上 ChatGPT 與 Gemini" />
+  <meta property="og:description" content="給 AI Agent 用的外部研究橋接器。Rust 驅動真實 Chrome，一行指令取得 ChatGPT / Gemini 協助。" />
+  <meta property="og:image" content="assets/og-cover.jpg" />
+  <meta name="twitter:card" content="summary_large_image" />
+
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%A6%80%3C/text%3E%3C/svg%3E" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,300..800&family=Hanken+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="styles.css" />
+  <script>try{if(!matchMedia('(prefers-reduced-motion: reduce)').matches)document.documentElement.classList.add('hero-anim');}catch(e){}</script>
+</head>
+<body>
+  <a class="skip" href="#main" data-i18n="nav.skip">跳至主內容</a>
+
+  <!-- Ambient background -->
+  <div class="ambient" aria-hidden="true">
+    <div class="ambient__grid"></div>
+    <div class="ambient__glow ambient__glow--primary"></div>
+    <div class="ambient__glow ambient__glow--accent"></div>
+  </div>
+
+  <!-- Nav -->
+  <header class="nav" id="nav">
+    <div class="nav__inner">
+      <a class="brand" href="#top" aria-label="ask-bridge">
+        <span class="brand__crab" aria-hidden="true">🦀</span>
+        <span class="brand__name">ask-bridge</span>
+      </a>
+
+      <nav class="nav__links" aria-label="sections">
+        <a href="#why" data-i18n="nav.why">為何而做</a>
+        <a href="#features" data-i18n="nav.features">功能</a>
+        <a href="#usage" data-i18n="nav.usage">用法</a>
+        <a href="#how" data-i18n="nav.how">原理</a>
+        <a href="#install" data-i18n="nav.install">安裝</a>
+      </nav>
+
+      <div class="nav__tools">
+        <div class="lang" id="lang">
+          <button class="lang__btn" id="langBtn" aria-haspopup="menu" aria-expanded="false" data-i18n-aria="nav.langLabel">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 0c3 3.5 3 14.5 0 18M3.5 9h17M3.5 15h17" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+            <span id="langLabel">繁體中文</span>
+          </button>
+          <ul class="lang__menu" id="langMenu" role="menu" hidden>
+            <li role="none"><button role="menuitem" data-lang="zh-TW" type="button">繁體中文</button></li>
+            <li role="none"><button role="menuitem" data-lang="zh-CN" type="button">简体中文</button></li>
+            <li role="none"><button role="menuitem" data-lang="ja" type="button">日本語</button></li>
+            <li role="none"><button role="menuitem" data-lang="ko" type="button">한국어</button></li>
+            <li role="none"><button role="menuitem" data-lang="en" type="button">English</button></li>
+          </ul>
+        </div>
+
+        <button class="theme" id="themeBtn" aria-pressed="false" data-i18n-aria="nav.toDark">
+          <svg class="ico ico--sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2" fill="none" stroke="currentColor" stroke-width="1.6"/><g stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M5 5l1.7 1.7M17.3 17.3 19 19M19 5l-1.7 1.7M6.7 17.3 5 19"/></g></svg>
+          <svg class="ico ico--moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 13.5A8 8 0 0 1 10.5 4a8 8 0 1 0 9.5 9.5Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+        </button>
+
+        <a class="nav__cta" href="https://github.com/doggy8088/ask-bridge" target="_blank" rel="noopener" aria-label="GitHub">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2C6.5 2 2 6.6 2 12.2c0 4.5 2.9 8.3 6.8 9.6.5.1.7-.2.7-.5v-1.7c-2.8.6-3.4-1.3-3.4-1.3-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.6 2.4 1.1 3 .9.1-.7.4-1.1.6-1.4-2.2-.300-4.5-1.1-4.5-5 0-1.1.4-2 1-2.7-.1-.3-.4-1.3.1-2.7 0 0 .8-.3 2.7 1a9.4 9.4 0 0 1 5 0c1.9-1.3 2.7-1 2.7-1 .5 1.4.2 2.4.1 2.7.6.7 1 1.6 1 2.7 0 3.9-2.3 4.7-4.5 5 .4.3.7.9.7 1.9v2.8c0 .3.2.6.7.5A10.2 10.2 0 0 0 22 12.2C22 6.6 17.5 2 12 2Z"/></svg>
+          <span>GitHub</span>
+        </a>
+
+        <button class="nav__burger" id="burger" aria-label="Menu" aria-expanded="false">
+          <span></span><span></span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <span id="top"></span>
+
+    <!-- Hero -->
+    <section class="hero">
+      <div class="hero__inner">
+        <div class="hero__copy">
+          <p class="kicker" data-i18n="hero.kicker">給 AI Agent 用的研究橋接器</p>
+          <h1 class="hero__title" data-i18n="hero.title">把終端機，<br/>接上 ChatGPT 與 Gemini</h1>
+          <p class="hero__sub" data-i18n="hero.sub">ask-bridge 以 Rust 驅動真實 Chrome，自動把 prompt 送進網站型 AI，再把回覆取回你的終端機。讓主要 Coding Agent 專注在高價值工作，把探索性研究交給網站額度。</p>
+
+          <div class="hero__cta">
+            <a class="btn btn--primary" href="#install" data-i18n="hero.ctaInstall">一鍵安裝</a>
+            <a class="btn btn--ghost" href="https://github.com/doggy8088/ask-bridge" target="_blank" rel="noopener" data-i18n="hero.ctaSource">查看原始碼</a>
+          </div>
+
+          <div class="install-strip" data-copy>
+            <code id="heroCmd">curl -fsSL https://raw.githubusercontent.com/doggy8088/ask-bridge/main/install.sh | bash</code>
+            <button class="copy" data-copy-target="heroCmd" data-i18n-aria="nav.copy">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="hero__visual">
+          <div class="hero__art">
+            <picture>
+              <source type="image/webp" srcset="assets/hero-bridge.webp" />
+              <img src="assets/hero-bridge.png" alt="抽象的光橋視覺：深黑舞台上以深紅與金色光線連接兩端節點" loading="eager" decoding="async" width="1600" height="900" />
+            </picture>
+          </div>
+          <div class="terminal" id="heroTerminal" aria-hidden="true">
+            <div class="terminal__bar">
+              <span class="dot dot--r"></span><span class="dot dot--y"></span><span class="dot dot--g"></span>
+              <span class="terminal__title">ask-bridge</span>
+            </div>
+            <div class="terminal__body">
+              <p class="terminal__line"><span class="t-prompt">$</span> <span class="t-cmd" id="termCmd"></span><span class="t-caret" id="termCaret"></span></p>
+              <p class="terminal__resp" id="termResp" data-i18n="hero.termResp">Rust 的所有權模型：每個值有唯一所有者，離開作用域即自動釋放⋯（回覆自動取回終端機）</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Why -->
+    <section class="section why" id="why">
+      <div class="section__head">
+        <h2 class="section__title" data-i18n="why.title">不是取代，而是橋接</h2>
+      </div>
+      <div class="why__grid">
+        <p class="why__lead" data-i18n="why.lead">開發過程中有大量探索性 AI 需求——查資料、整理文件、比較方案、摘要錯誤、產生初稿。這些任務未必需要主要 Coding Agent 親自做，也不值得消耗與改程式、跑測試相同的額度。</p>
+        <ul class="why__points">
+          <li>
+            <h3 data-i18n="why.p1.t">額度分開計算</h3>
+            <p data-i18n="why.p1.d">網站型 AI 的使用額度與 Coding Agent 執行額度通常獨立。把研究工作委外，讓高價值額度留給程式碼。</p>
+          </li>
+          <li>
+            <h3 data-i18n="why.p2.t">不離開工作流程</h3>
+            <p data-i18n="why.p2.d">不必切換瀏覽器、貼上 prompt、等待、再複製回來。一行指令完成終端機與網站型 AI 的往返。</p>
+          </li>
+          <li>
+            <h3 data-i18n="why.p3.t">真實瀏覽器，持久登入</h3>
+            <p data-i18n="why.p3.d">在真實 Chrome 中執行，只需登入一次。可處理 CAPTCHA、Cloudflare，像一般使用者存取網站功能。</p>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Features -->
+    <section class="section features" id="features">
+      <div class="section__head">
+        <h2 class="section__title" data-i18n="features.title">一行指令，完整橋接</h2>
+      </div>
+
+      <div class="features__ledger">
+        <article class="feat feat--wide">
+          <div class="feat__txt">
+            <h3 data-i18n="features.f1.t">多 Provider 切換</h3>
+            <p data-i18n="features.f1.d">以 --provider 在 ChatGPT 與 Gemini 之間切換，或在設定檔指定預設 provider。</p>
+          </div>
+          <pre class="code" data-copy><code id="f1c">ask-bridge --provider gemini "比較這兩個方案"</code><button class="copy" data-copy-target="f1c" data-i18n-aria="nav.copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button></pre>
+        </article>
+
+        <article class="feat">
+          <div class="feat__txt">
+            <h3 data-i18n="features.f2.t">Pipe 與 stdin</h3>
+            <p data-i18n="features.f2.d">把檔案內容或管線文字直接餵進 prompt，無需離開終端機。</p>
+          </div>
+          <pre class="code" data-copy><code id="f2c">cat src/main.rs | ask-bridge "有記憶體洩漏嗎？"</code><button class="copy" data-copy-target="f2c" data-i18n-aria="nav.copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button></pre>
+        </article>
+
+        <article class="feat">
+          <div class="feat__txt">
+            <h3 data-i18n="features.f3.t">圖片與文件附件</h3>
+            <p data-i18n="features.f3.d">--image 附上圖片、--file 附上 PDF／Word／CSV／程式碼等文件。</p>
+          </div>
+          <pre class="code" data-copy><code id="f3c">ask-bridge "摘要這份 PDF" --file report.pdf</code><button class="copy" data-copy-target="f3c" data-i18n-aria="nav.copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button></pre>
+        </article>
+
+        <article class="feat">
+          <div class="feat__txt">
+            <h3 data-i18n="features.f4.t">模型切換</h3>
+            <p data-i18n="features.f4.d">送出前以 --model 切換 ChatGPT 的 GPT-5.4、o3 或 Gemini 的 3.1 Pro。</p>
+          </div>
+          <pre class="code" data-copy><code id="f4c">ask-bridge "證明這題" --model o3</code><button class="copy" data-copy-target="f4c" data-i18n-aria="nav.copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button></pre>
+        </article>
+
+        <article class="feat feat--wide">
+          <div class="feat__txt">
+            <h3 data-i18n="features.f5.t">智慧分頁 · 安靜預設</h3>
+            <p data-i18n="features.f5.d">重用、聚焦或開新分頁避免分頁氾濫；預設只輸出回覆，--verbose 顯示完整流程。</p>
+          </div>
+          <pre class="code" data-copy><code id="f5c">ask-bridge "誰是保哥？" --new --verbose</code><button class="copy" data-copy-target="f5c" data-i18n-aria="nav.copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button></pre>
+        </article>
+      </div>
+    </section>
+
+    <!-- Usage -->
+    <section class="section usage" id="usage">
+      <div class="section__head">
+        <h2 class="section__title" data-i18n="usage.title">三分鐘上手</h2>
+      </div>
+
+      <div class="usage__grid">
+        <div class="usage__step">
+          <span class="usage__tag" data-i18n="usage.s1.t">1 · 登入</span>
+          <p data-i18n="usage.s1.d">首次執行登入所選 provider，只需一次。</p>
+          <pre class="code code--blk" data-copy><code id="u1c">ask-bridge login
+ask-bridge --provider gemini login</code><button class="copy" data-copy-target="u1c" data-i18n-aria="nav.copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button></pre>
+        </div>
+        <div class="usage__step">
+          <span class="usage__tag" data-i18n="usage.s2.t">2 · 直接提問</span>
+          <p data-i18n="usage.s2.d">把 prompt 作為參數傳入，回覆輸出到終端機。</p>
+          <pre class="code code--blk" data-copy><code id="u2c">ask-bridge "Rust struct 和 tuple 有何差異？"</code><button class="copy" data-copy-target="u2c" data-i18n-aria="nav.copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button></pre>
+        </div>
+        <div class="usage__step">
+          <span class="usage__tag" data-i18n="usage.s3.t">3 · 管線與檔案</span>
+          <p data-i18n="usage.s3.d">透過 pipe 餵入內容，或以 --file 附件上傳。</p>
+          <pre class="code code--blk" data-copy><code id="u3c">cat src/main.rs | ask-bridge "這段有風險嗎？"
+ask-bridge "摘要這份 PDF" --file report.pdf</code><button class="copy" data-copy-target="u3c" data-i18n-aria="nav.copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button></pre>
+        </div>
+        <div class="usage__step">
+          <span class="usage__tag" data-i18n="usage.s4.t">4 · 切換模型</span>
+          <p data-i18n="usage.s4.d">送出前指定模型或思考強度。</p>
+          <pre class="code code--blk" data-copy><code id="u4c">ask-bridge "用幾句話介紹 Rust" --model GPT-5.4
+ask-bridge --provider gemini "翻譯這段" --model "3.1 Pro"</code><button class="copy" data-copy-target="u4c" data-i18n-aria="nav.copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- How it works -->
+    <section class="section how" id="how">
+      <div class="section__head">
+        <h2 class="section__title" data-i18n="how.title">從指令到回覆，四個步驟</h2>
+      </div>
+      <ol class="how__timeline">
+        <li>
+          <span class="how__num">01</span>
+          <div>
+            <h3 data-i18n="how.s1.t">瀏覽器初始化</h3>
+            <p data-i18n="how.s1.d">檢查 Chrome 是否監聽 debug port 9223，若無則以專屬 profile 目錄啟動背景 Chrome。</p>
+          </div>
+        </li>
+        <li>
+          <span class="how__num">02</span>
+          <div>
+            <h3 data-i18n="how.s2.t">MCP Bridge 設定</h3>
+            <p data-i18n="how.s2.d">自動寫入 mcp_servers.json，設定 chrome-devtools-mcp server 指向本機 9223。</p>
+          </div>
+        </li>
+        <li>
+          <span class="how__num">03</span>
+          <div>
+            <h3 data-i18n="how.s3.t">Client 呼叫</h3>
+            <p data-i18n="how.s3.d">透過內建 mcp-cli 呼叫 list_pages、select_page、type_text、evaluate_script 等工具。</p>
+          </div>
+        </li>
+        <li>
+          <span class="how__num">04</span>
+          <div>
+            <h3 data-i18n="how.s4.t">狀態輪詢</h3>
+            <p data-i18n="how.s4.d">以 JavaScript 檢查送出／停止按鈕狀態，擷取回覆元素文字並輸出到 stdout。</p>
+          </div>
+        </li>
+      </ol>
+    </section>
+
+    <!-- Install -->
+    <section class="section install" id="install">
+      <div class="section__head">
+        <h2 class="section__title" data-i18n="install.title">馬上開始</h2>
+      </div>
+
+      <div class="tabs" id="installTabs">
+        <div class="tabs__bar" role="tablist" data-i18n-aria="install.tabsLabel">
+          <button class="tab tab--active" role="tab" id="tab-mac" data-tab="mac" aria-selected="true" aria-controls="panel-mac" tabindex="0" data-i18n="install.t1">macOS / Linux</button>
+          <button class="tab" role="tab" id="tab-win" data-tab="win" aria-selected="false" aria-controls="panel-win" tabindex="-1" data-i18n="install.t2">Windows</button>
+          <button class="tab" role="tab" id="tab-src" data-tab="src" aria-selected="false" aria-controls="panel-src" tabindex="-1" data-i18n="install.t3">從原始碼</button>
+          <button class="tab" role="tab" id="tab-skill" data-tab="skill" aria-selected="false" aria-controls="panel-skill" tabindex="-1" data-i18n="install.t4">Agent Skill</button>
+        </div>
+
+        <div class="tabs__panel tab--active" id="panel-mac" role="tabpanel" aria-labelledby="tab-mac" data-panel="mac">
+          <pre class="code code--blk" data-copy><code id="i1c">curl -fsSL https://raw.githubusercontent.com/doggy8088/ask-bridge/main/install.sh | bash</code><button class="copy" data-copy-target="i1c" data-i18n-aria="nav.copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button></pre>
+        </div>
+        <div class="tabs__panel" id="panel-win" role="tabpanel" aria-labelledby="tab-win" data-panel="win" hidden>
+          <pre class="code code--blk" data-copy><code id="i2c">irm https://raw.githubusercontent.com/doggy8088/ask-bridge/main/install.ps1 | iex</code><button class="copy" data-copy-target="i2c" data-i18n-aria="nav.copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button></pre>
+        </div>
+        <div class="tabs__panel" id="panel-src" role="tabpanel" aria-labelledby="tab-src" data-panel="src" hidden>
+          <pre class="code code--blk" data-copy><code id="i3c">git clone https://github.com/doggy8088/ask-bridge.git
+cd ask-bridge && make install</code><button class="copy" data-copy-target="i3c" data-i18n-aria="nav.copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button></pre>
+        </div>
+        <div class="tabs__panel" id="panel-skill" role="tabpanel" aria-labelledby="tab-skill" data-panel="skill" hidden>
+          <pre class="code code--blk" data-copy><code id="i4c">npx skills add doggy8088/ask-bridge --skill ask-bridge</code><button class="copy" data-copy-target="i4c" data-i18n-aria="nav.copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- CTA band -->
+    <section class="cta">
+      <div class="cta__inner">
+        <div class="cta__emblem">
+          <picture>
+            <source type="image/webp" srcset="assets/bridge-emblem.webp" />
+            <img src="assets/bridge-emblem.png" alt="" loading="lazy" decoding="async" width="640" height="640" />
+          </picture>
+        </div>
+        <div class="cta__copy">
+          <h2 data-i18n="cta.title">讓你的 Agent 多一條研究通路</h2>
+          <p data-i18n="cta.sub">把探索性工作交給網站型 AI，把高價值額度留給真正改變專案的程式碼。</p>
+          <div class="install-strip install-strip--light" data-copy>
+            <code id="ctaCmd">curl -fsSL https://raw.githubusercontent.com/doggy8088/ask-bridge/main/install.sh | bash</code>
+            <button class="copy" data-copy-target="ctaCmd" data-i18n-aria="nav.copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="footer__inner">
+      <div class="footer__brand">
+        <span class="brand__crab" aria-hidden="true">🦀</span>
+        <div>
+          <p class="footer__name">ask-bridge</p>
+          <p class="footer__tag" data-i18n="footer.tagline">給 AI Agent 用的外部研究橋接器</p>
+        </div>
+      </div>
+
+      <nav class="footer__links" aria-label="footer">
+        <a href="https://github.com/doggy8088/ask-bridge" target="_blank" rel="noopener" data-i18n="footer.github">GitHub</a>
+        <a href="https://github.com/doggy8088/ask-bridge/blob/main/README.md" target="_blank" rel="noopener" data-i18n="footer.docs">文件</a>
+        <a href="https://github.com/doggy8088/ask-bridge/issues" target="_blank" rel="noopener" data-i18n="footer.issues">問題回報</a>
+        <a href="https://www.facebook.com/will.fans/" target="_blank" rel="noopener">Facebook</a>
+      </nav>
+
+      <div class="footer__meta">
+        <p class="footer__by">
+          <span data-i18n="footer.by">由</span>
+          <a href="https://www.facebook.com/will.fans/" target="_blank" rel="noopener">Will 保哥</a>
+          <span data-i18n="footer.crafted">打造</span>
+        </p>
+        <p class="footer__lic">MIT License · Rust 🦀</p>
+      </div>
+    </div>
+  </footer>
+
+  <script src="i18n.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
