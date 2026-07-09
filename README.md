@@ -1,6 +1,6 @@
 # Ask Bridge 🦀
 
-`ask-bridge` 是以 Rust 撰寫的輕量命令列工具，可透過真實 Chrome 瀏覽器自動操作 ChatGPT 與 Gemini。它使用 Model Context Protocol MCP 與 Chrome DevTools Protocol CDP，並透過內建的 `doggy8088/mcp-cli` Rust library dependency 搭配 `chrome-devtools-mcp` 控制 Chrome、輸入 prompt、送出訊息，並將回覆輸出到終端機。未設定全域 provider 時預設使用 ChatGPT，可用 `--provider gemini` 或全域設定檔切換到 Gemini。
+`ask-bridge` 是以 Rust 撰寫的輕量命令列工具，可透過真實 Chrome 瀏覽器自動操作 ChatGPT、Gemini 與 Claude。它使用 Model Context Protocol MCP 與 Chrome DevTools Protocol CDP，並透過內建的 `doggy8088/mcp-cli` Rust library dependency 搭配 `chrome-devtools-mcp` 控制 Chrome、輸入 prompt、送出訊息，並將回覆輸出到終端機。未設定全域 provider 時預設使用 ChatGPT，可用 `--provider gemini`、`--provider claude` 或全域設定檔切換到 Gemini 或 Claude。
 
 ## 設計意圖
 
@@ -28,7 +28,7 @@
 ## 主要功能
 
 - **100% Rust 核心**：快速、輕量，編譯後即可執行。
-- **多 provider 支援**：使用 `--provider chatgpt|gemini` 選擇 ChatGPT 或 Gemini。
+- **多 provider 支援**：使用 `--provider chatgpt|gemini|claude` 選擇 ChatGPT、Gemini 或 Claude。
 - **全域 provider 設定**：可在 `~/.config/ask-bridge/config.json` 指定預設 provider，CLI 的 `--provider` 會覆蓋設定檔。
 - **真實瀏覽器自動化**：直接控制監聽 `9223` port 的 Chrome debug profile。
 - **持久登入狀態**：使用專屬本機 profile 目錄 `~/.config/ask-bridge/chrome-profile`，避免重複登入。
@@ -36,8 +36,8 @@
 - **思考動畫**：等待 provider 回覆時，在終端機顯示旋轉 spinner，開始輸出內容後自動清除。
 - **智慧分頁管理**：可重用既有 provider 分頁、聚焦分頁，或開啟新分頁，避免分頁過度增加。
 - **Pipe 與 stdin 支援**：支援透過 standard input 傳入 prompt，例如 `cat report.txt | ask-bridge "summarize this"`。
-- **圖片與文件上傳**：可透過 `--image` 附上 ChatGPT 圖片，或透過 `--file` 附上文件（PDF、Word、Excel、純文字、Markdown、JSON 等皆可），一次可指定多個檔案；Gemini 目前支援 `--file`，不支援 `--image` 圖片輸入。
-- **模型切換**：使用 `--model` 在送出 prompt 前自動切換 provider 模型（如 ChatGPT 的 `GPT-5.4`、`o3`，或 Gemini 的 `3.5 Flash`、`3.1 Pro`）。
+- **圖片與文件上傳**：可透過 `--image` 附上 ChatGPT 圖片，或透過 `--file` 附上文件（PDF、Word、Excel、純文字、Markdown、JSON 等皆可），一次可指定多個檔案；Gemini 目前支援 `--file`，不支援 `--image` 圖片輸入；Claude 目前僅支援純文字 prompt，不支援 `--image` 與 `--file`。
+- **模型切換**：使用 `--model` 在送出 prompt 前自動切換 provider 模型（如 ChatGPT 的 `GPT-5.4`、`o3`，或 Gemini 的 `3.5 Flash`、`3.1 Pro`）；Claude 目前不支援模型切換。
 - **預設安靜模式與 verbose 模式**：預設只輸出最終回覆；加上 `--verbose` 可顯示背景瀏覽器控制流程。
 - **版本資訊**：使用 `-v` 或 `--version` 顯示目前版本號。
 

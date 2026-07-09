@@ -1,6 +1,6 @@
 # Ask Bridge 🦀
 
-`ask-bridge` is a powerful, lightweight command-line tool written in **Rust** that automates ChatGPT or Gemini directly in your real Chrome browser. It uses the **Model Context Protocol (MCP)** and **Chrome DevTools Protocol (CDP)** via the embedded `doggy8088/mcp-cli` Rust library dependency and `chrome-devtools-mcp` to control Chrome, input prompts, click submit, and print the response back to your terminal. ChatGPT is the default when no global provider is configured; use `--provider gemini` or the global config file to switch to Gemini.
+`ask-bridge` is a powerful, lightweight command-line tool written in **Rust** that automates ChatGPT, Gemini, or Claude directly in your real Chrome browser. It uses the **Model Context Protocol (MCP)** and **Chrome DevTools Protocol (CDP)** via the embedded `doggy8088/mcp-cli` Rust library dependency and `chrome-devtools-mcp` to control Chrome, input prompts, click submit, and print the response back to your terminal. ChatGPT is the default when no global provider is configured; use `--provider gemini`, `--provider claude`, or the global config file to switch to Gemini or Claude.
 
 ## Design Intent
 
@@ -29,7 +29,7 @@ Unlike typical API clients, `ask-bridge` operates inside a real Chrome browser w
 ## 🌟 Key Features
 
 - **🦀 100% Rust Core**: Extremely fast, lightweight, and compile-once, run-anywhere binary.
-- **Multi-provider support**: Choose ChatGPT or Gemini with `--provider chatgpt|gemini`.
+- **Multi-provider support**: Choose ChatGPT, Gemini, or Claude with `--provider chatgpt|gemini|claude`.
 - **Global provider config**: Set the default provider in `~/.config/ask-bridge/config.json`; CLI `--provider` overrides the config file.
 - **🌐 Real Browser Automation**: Directly interacts with Chrome on port `9223` (isolated debug profile).
 - **🔒 Persistent Login**: Uses a dedicated local profile directory (`~/.config/ask-bridge/chrome-profile`) so you never lose your login state.
@@ -37,8 +37,8 @@ Unlike typical API clients, `ask-bridge` operates inside a real Chrome browser w
 - **🌀 TUI Thinking Animation**: Displays a rotating spinner while waiting for the provider to reply, then clears it once output starts.
 - **🧠 Intelligent Tab Management**: Reuses existing provider tabs if open, focuses them, or opens new ones, avoiding tab clutter.
 - **🖥️ Pipe & Stdin Support**: Supports piping prompts via `stdin` (e.g. `cat report.txt | ask-bridge "summarize this"`).
-- **📎 Image & File Attachments**: Attach local images to ChatGPT with `--image`, or documents (PDF, Word, Excel, plain text, Markdown, JSON, etc.) with `--file`; Gemini currently supports `--file` and rejects `--image`.
-- **🔀 Model Switching**: Use `--model` to switch the provider model before the prompt is sent, such as ChatGPT `GPT-5.4` or Gemini `3.5 Flash`.
+- **📎 Image & File Attachments**: Attach local images to ChatGPT with `--image`, or documents (PDF, Word, Excel, plain text, Markdown, JSON, etc.) with `--file`; Gemini currently supports `--file` and rejects `--image`; Claude currently supports text-only prompts and rejects both `--image` and `--file`.
+- **🔀 Model Switching**: Use `--model` to switch the provider model before the prompt is sent, such as ChatGPT `GPT-5.4` or Gemini `3.5 Flash`; Claude does not support model switching.
 - **🔍 Quiet by Default & Verbose Mode**: Quiet and clean output by default (displaying only the generated response), with an optional `--verbose` flag to display full browser state logs if needed.
 - **Version Info**: Use `-v` or `--version` to print the current version number.
 

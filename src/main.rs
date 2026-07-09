@@ -17,6 +17,8 @@ enum Provider {
     ChatGpt,
     #[value(name = "gemini")]
     Gemini,
+    #[value(name = "claude")]
+    Claude,
 }
 
 impl Provider {
@@ -24,6 +26,7 @@ impl Provider {
         match value.trim().to_ascii_lowercase().as_str() {
             "chatgpt" | "chat-gpt" | "chat_gpt" => Some(Provider::ChatGpt),
             "gemini" => Some(Provider::Gemini),
+            "claude" | "claude-ai" | "claude_ai" => Some(Provider::Claude),
             _ => None,
         }
     }
@@ -32,6 +35,7 @@ impl Provider {
         match self {
             Provider::ChatGpt => "ChatGPT",
             Provider::Gemini => "Gemini",
+            Provider::Claude => "Claude",
         }
     }
 
@@ -39,6 +43,7 @@ impl Provider {
         match self {
             Provider::ChatGpt => "https://chatgpt.com/",
             Provider::Gemini => "https://gemini.google.com/app",
+            Provider::Claude => "https://claude.ai/new",
         }
     }
 
@@ -46,11 +51,12 @@ impl Provider {
         match self {
             Provider::ChatGpt => url.contains("chatgpt.com"),
             Provider::Gemini => url.contains("gemini.google.com"),
+            Provider::Claude => url.contains("claude.ai"),
         }
     }
 
     fn from_url(url: &str) -> Option<Self> {
-        [Provider::ChatGpt, Provider::Gemini]
+        [Provider::ChatGpt, Provider::Gemini, Provider::Claude]
             .into_iter()
             .find(|provider| provider.owns_url(url))
     }
@@ -65,6 +71,13 @@ impl Provider {
                            document.querySelector('.ql-editor[contenteditable="true"]') !== null ||
                            document.querySelector('a[href*="accounts.google.com"]') !== null ||
                            /Sign in|登入/.test(document.body.innerText || '');
+                }"#
+            }
+            Provider::Claude => {
+                r#"() => {
+                    return document.querySelector('[data-testid="chat-input"]') !== null ||
+                           document.querySelector('a[href*="/login"]') !== null ||
+                           /Log in|Sign in|登入/.test(document.body.innerText || '');
                 }"#
             }
         }
@@ -136,6 +149,9 @@ impl Provider {
                     return Boolean(composer) && (Boolean(account) || !signIn);
                 }"#
             }
+            Provider::Claude => {
+                r#"() => document.querySelector('[data-testid="user-menu-button"]') !== null"#
+            }
         }
     }
 
@@ -143,6 +159,10 @@ impl Provider {
         match self {
             Provider::ChatGpt => "[data-message-author-role=\"assistant\"], .agent-turn",
             Provider::Gemini => "model-response",
+            // data-is-streaming 為 Claude assistant 回覆專屬串流標記（user turn 用
+            // [data-testid="user-message"]，無此屬性）；"false" = 已完成的 assistant 訊息，
+            // 據此鎖定「新完成的 assistant turn」，避免串流中（無此屬性或為 "true"）誤判完成。
+            Provider::Claude => "div[data-is-streaming=\"false\"]",
         }
     }
 
@@ -152,6 +172,10 @@ impl Provider {
                 "[data-message-author-role=\"assistant\"], .agent-turn, model-response, .model-response, [data-test-id*=\"response\"], [data-testid*=\"response\"]"
             }
             Provider::Gemini => "model-response",
+            // data-is-streaming 為 Claude assistant 回覆專屬串流標記（user turn 用
+            // [data-testid="user-message"]，無此屬性）；"false" = 已完成的 assistant 訊息，
+            // 據此鎖定「新完成的 assistant turn」，避免串流中（無此屬性或為 "true"）誤判完成。
+            Provider::Claude => "div[data-is-streaming=\"false\"]",
         }
     }
 
@@ -161,6 +185,7 @@ impl Provider {
             Provider::Gemini => {
                 "message-content, .markdown, structured-content-container.model-response-text"
             }
+            Provider::Claude => "",
         }
     }
 
@@ -172,6 +197,13 @@ impl Provider {
                     "div[role=\"textbox\"][aria-label*=\"Gemini\"]",
                     "rich-textarea [contenteditable=\"true\"]",
                     ".ql-editor[contenteditable=\"true\"]"
+                ]"#
+            }
+            Provider::Claude => {
+                r#"[
+                    "[data-testid=\"chat-input\"]",
+                    "div[contenteditable=\"true\"].ProseMirror",
+                    "div[contenteditable=\"true\"]"
                 ]"#
             }
         }
@@ -197,6 +229,13 @@ impl Provider {
                     "button[aria-label*=\"提交\"]"
                 ]"#
             }
+            Provider::Claude => {
+                r#"[
+                    "button[aria-label=\"Send message\"]",
+                    "button[aria-label*=\"Send\"]",
+                    "button[aria-label*=\"傳送\"]"
+                ]"#
+            }
         }
     }
 
@@ -216,6 +255,13 @@ impl Provider {
                     "button[aria-label*=\"停止\"]"
                 ]"#
             }
+            Provider::Claude => {
+                r#"[
+                    "button[aria-label=\"Stop response\"]",
+                    "button[aria-label*=\"Stop\"]",
+                    "button[aria-label*=\"停止\"]"
+                ]"#
+            }
         }
     }
 }
@@ -225,6 +271,7 @@ impl fmt::Display for Provider {
         match self {
             Provider::ChatGpt => write!(f, "chatgpt"),
             Provider::Gemini => write!(f, "gemini"),
+            Provider::Claude => write!(f, "claude"),
         }
     }
 }
@@ -1187,6 +1234,20 @@ fn validate_provider_feature_support(provider: Provider, cli: &Cli) -> Result<()
         );
     }
 
+    if provider == Provider::Claude && (!cli.images.is_empty() || !cli.files.is_empty()) {
+        return Err(
+            "Claude attachments are not supported yet. The Claude provider currently supports text prompts only."
+                .to_string(),
+        );
+    }
+
+    if provider == Provider::Claude && cli.model.is_some() {
+        return Err(
+            "Claude model switching is not supported yet. Remove --model to use the current Claude model."
+                .to_string(),
+        );
+    }
+
     Ok(())
 }
 
@@ -1252,6 +1313,10 @@ mod tests {
             parse_configured_provider(r#"{"provider":"chat-gpt"}"#).unwrap(),
             Some(Provider::ChatGpt)
         );
+        assert_eq!(
+            parse_configured_provider(r#"{"provider":"claude"}"#).unwrap(),
+            Some(Provider::Claude)
+        );
         assert_eq!(parse_configured_provider(r#"{}"#).unwrap(), None);
     }
 
@@ -1286,7 +1351,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_provider_in_config_json() {
-        let err = parse_configured_provider(r#"{"provider":"claude"}"#).unwrap_err();
+        let err = parse_configured_provider(r#"{"provider":"grok"}"#).unwrap_err();
         assert!(err.contains("Invalid provider"));
     }
 
@@ -1326,7 +1391,13 @@ mod tests {
 
     #[test]
     fn rejects_unknown_provider() {
-        assert!(Cli::try_parse_from(["ask-bridge", "--provider", "claude", "hello"]).is_err());
+        assert!(Cli::try_parse_from(["ask-bridge", "--provider", "grok", "hello"]).is_err());
+    }
+
+    #[test]
+    fn accepts_claude_provider() {
+        let cli = Cli::try_parse_from(["ask-bridge", "--provider", "claude", "hello"]).unwrap();
+        assert_eq!(cli.provider, Some(Provider::Claude));
     }
 
     #[test]
@@ -1338,6 +1409,10 @@ mod tests {
         assert_eq!(
             Provider::from_url("https://gemini.google.com/app/abc"),
             Some(Provider::Gemini)
+        );
+        assert_eq!(
+            Provider::from_url("https://claude.ai/chat/abc"),
+            Some(Provider::Claude)
         );
         assert_eq!(Provider::from_url("https://example.com"), None);
     }
@@ -1505,6 +1580,40 @@ mod tests {
         let profile_path = "/Users/will/.config/ask-bridge/chrome-profile";
 
         assert!(!command_uses_profile(command, profile_path));
+    }
+
+    #[test]
+    fn rejects_claude_attachments() {
+        let cli = Cli::try_parse_from([
+            "ask-bridge",
+            "--provider",
+            "claude",
+            "--file",
+            "token.txt",
+            "read",
+        ])
+        .unwrap();
+        assert!(validate_provider_feature_support(Provider::Claude, &cli).is_err());
+    }
+
+    #[test]
+    fn rejects_claude_model_switch() {
+        let cli = Cli::try_parse_from([
+            "ask-bridge",
+            "--provider",
+            "claude",
+            "--model",
+            "opus",
+            "read",
+        ])
+        .unwrap();
+        assert!(validate_provider_feature_support(Provider::Claude, &cli).is_err());
+    }
+
+    #[test]
+    fn allows_claude_text_prompt() {
+        let cli = Cli::try_parse_from(["ask-bridge", "--provider", "claude", "read"]).unwrap();
+        assert!(validate_provider_feature_support(Provider::Claude, &cli).is_ok());
     }
 }
 
@@ -2333,6 +2442,8 @@ fn upload_attachments_via_file_chooser(
                     .or_else(|| find_snapshot_uid(&snapshot, &["upload"], &["drive"]))
             }
             Provider::ChatGpt => find_snapshot_uid(&snapshot, &["attach"], &["settings", "menu"]),
+            // 上傳由 validate_provider_feature_support 提前擋下，此分支不可達
+            Provider::Claude => None,
         }
         .ok_or_else(|| {
             format!(
@@ -2356,6 +2467,7 @@ fn upload_attachments_via_file_chooser(
             Provider::Gemini => find_snapshot_uid(&snapshot, &["上傳檔案"], &["雲端", "drive"])
                 .or_else(|| find_snapshot_uid(&snapshot, &["upload", "file"], &["drive"])),
             Provider::ChatGpt => find_snapshot_uid(&snapshot, &["file"], &["drive", "connect"]),
+            Provider::Claude => None,
         }
         .unwrap_or_else(|| menu_uid.clone());
 
@@ -2711,6 +2823,13 @@ fn switch_model(
     }
 
     let js = match provider {
+        // model 切換由 validate_provider_feature_support 提前擋下，此分支不可達
+        Provider::Claude => {
+            return Err(
+                "Claude model switching is not supported yet. Remove --model to use the current Claude model."
+                    .to_string(),
+            );
+        }
         Provider::ChatGpt => {
             // The script opens the composer pill menu, walks visible leaves and submenu
             // triggers, and clicks the first leaf whose normalized label matches.

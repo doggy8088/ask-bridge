@@ -2,6 +2,16 @@
 
 本專案的所有重要變更皆會記錄於本文件中。
 
+## [Unreleased]
+
+### 🚀 新增 (Added)
+- **Claude 網頁版 provider 支援**：新增 `--provider claude`，可透過 claude.ai 網頁送出文字 prompt 並取回回覆。登入偵測、composer、送出／停止按鈕與回覆容器 selector 均採語意屬性（`data-testid` / `aria-label`）並經實站校正。第一版僅支援純文字 prompt，尚不支援 `--image` / `--file` 附件與 `--model` 模型切換（由 `validate_provider_feature_support` 明確擋下並回報清楚訊息）。
+
+### 🔧 修復 (Fixed)
+- 回應 codex 對抗審查／PR review comments：(1) Claude `ready_check` 加入登入頁指標（`/login` 連結或 Log in／Sign in／登入 文字），避免登出／新 profile 首次 `login` 卡到 timeout；(2) Claude assistant／回覆 selector 改用 `div[data-is-streaming="false"]`（僅完成的訊息），避免串流中被誤判為完成而截斷（實測 claude 完成後容器為 `data-is-streaming="false"`）。
+
+---
+
 ## [0.1.4] - 2026-07-09
 
 ### 🔧 修復 (Fixed)
