@@ -15,9 +15,9 @@
 
 ---
 
-## 💻 跨平台相容性設計 (macOS vs Windows)
+## 💻 跨平台相容性設計 (macOS / Windows / Linux)
 
-本專案支援 **macOS** 與 **Windows** 系統。由於系統底層指令不同，在開發或重構以下功能時需特別注意平台相容性：
+本專案支援 **macOS**、**Windows** 與 **Linux** 系統。由於系統底層指令不同，在開發或重構以下功能時需特別注意平台相容性：
 
 ### 1. Google Chrome 路徑偵測
 * **macOS** 預設路徑：`/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`
@@ -25,10 +25,11 @@
   1. 優先查詢系統 `Program Files` 底下的 Chrome 安裝路徑。
   2. 若無，則查詢 `Program Files (x86)` 安裝路徑。
   3. 最後查詢使用者本地目錄 `%LOCALAPPDATA%` 下的 Chrome 安裝路徑。
+* **Linux** 偵測邏輯（於 `src/main.rs:find_chrome_path` 實作）：依序查詢 `/usr/bin/google-chrome`、`/usr/bin/google-chrome-stable`、`/opt/google/chrome/chrome`，並支援 Chromium（`/usr/bin/chromium`、`/usr/bin/chromium-browser`、`/snap/bin/chromium`）。
 
 ### 2. 視窗隱藏與 AppleScript
 * 在 macOS 上，程式會異步調用 `osascript`（AppleScript）以將背景 Chrome 實例隱藏（防止 Dock 閃爍）。
-* 在 Windows 平台上，所有 AppleScript 呼叫接已透過條件編譯 `#[cfg(target_os = "macos")]` 予以排除。
+* 在 Windows 與 Linux 平台上，所有 AppleScript 呼叫皆透過條件編譯 `#[cfg(target_os = "macos")]` 予以排除；背景視窗改以螢幕外定位（`--window-position=-2000,-2000`）處理，不需視窗隱藏。
 
 ### 3. 偵測佔用連接埠 `9223` 的處理程序 (PID)
 * **macOS / Linux**：使用 `lsof -tiTCP:9223 -sTCP:LISTEN` 指令。

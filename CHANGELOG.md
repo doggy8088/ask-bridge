@@ -2,6 +2,15 @@
 
 本專案的所有重要變更皆會記錄於本文件中。
 
+## [Unreleased]
+
+### 🚀 新增 (Added)
+- **Linux 平台支援**：`find_chrome_path` 新增 Linux 分支，依序偵測 `/usr/bin/google-chrome`、`/usr/bin/google-chrome-stable`、`/opt/google/chrome/chrome` 與 Chromium 等常見路徑；視窗處理與 Windows 一致（螢幕外定位，osascript 仍為 macOS 專屬），PID 偵測／查詢／終止沿用既有 `lsof` / `ps` / `kill`（macOS/Linux 共用）。ChatGPT 與 Gemini 已於 Linux 實機端到端驗證；`make install` 的 `install-browser` 亦改為 OS-aware（Linux 接受 google-chrome / chromium 或給對應套件管理器安裝指引，不再因 macOS-only 檢查而卡住）。
+
+### 🔧 修復 (Fixed)
+- 9223 port owner 探測強化：Linux 加入 `ss` fallback（`lsof` 缺失時備援），避免 PID 探測失敗時誤判 9223 上的 Chrome 非本工具所有。
+- `find_chrome_path` Linux 分支改用 `std::env::split_paths` 掃描 `PATH`（純 Rust，不依賴外部 `which`），涵蓋 `/usr/local/bin`、`~/.local/bin`、Nix、Linuxbrew 等非標準安裝，與 `install.sh` 的 `command -v` 偵測一致，避免 installer 通過但 runtime 找不到。
+
 ## [0.1.3] - 2026-07-08
 
 ### 🔧 變更 (Changed)

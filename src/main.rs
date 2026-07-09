@@ -543,7 +543,7 @@ fn find_chrome_path() -> Result<String, String> {
         Err("Google Chrome was not found in standard Windows installation paths. Please install Google Chrome.".to_string())
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     {
         let path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
         if std::path::Path::new(path).exists() {
@@ -551,6 +551,53 @@ fn find_chrome_path() -> Result<String, String> {
         } else {
             Err("Google Chrome not found at /Applications/Google Chrome.app".to_string())
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // 依序檢查常見的 Google Chrome 與 Chromium 安裝路徑
+        for path in [
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/opt/google/chrome/chrome",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/snap/bin/chromium",
+        ] {
+            if std::path::Path::new(path).exists() {
+                return Ok(path.to_string());
+            }
+        }
+        // 固定路徑找不到時掃 PATH（純 Rust std::env::split_paths，不依賴外部 which）；
+        // 涵蓋 /usr/local/bin、~/.local/bin、Nix、Linuxbrew 等非標準安裝，與 install.sh
+        // 的 command -v 偵測一致，避免 installer 通過但 runtime 找不到。
+        if let Ok(path_env) = std::env::var("PATH") {
+            for dir in std::env::split_paths(&path_env) {
+                for bin in [
+                    "google-chrome",
+                    "google-chrome-stable",
+                    "chromium",
+                    "chromium-browser",
+                ] {
+                    let candidate = dir.join(bin);
+                    if candidate.is_file() {
+                        return Ok(candidate.to_string_lossy().into_owned());
+                    }
+                }
+            }
+        }
+        Err(
+            "Google Chrome / Chromium was not found in standard Linux paths or on PATH. Please install Google Chrome or Chromium."
+                .to_string(),
+        )
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        Err(
+            "Unsupported platform: automatic Chrome path detection is available on Windows, macOS, and Linux only."
+                .to_string(),
+        )
     }
 }
 
@@ -677,19 +724,46 @@ fn debug_port_listener_pids() -> Vec<String> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        let output = Command::new("lsof")
+        // lsof 為主。部分 Linux 未預裝 lsof，fallback 到 ss（iproute2，多數發行版預裝），
+        // 避免 PID 探測失敗時誤判 9223 上的 Chrome 非本工具所有而連到外部瀏覽器。
+        let lsof = Command::new("lsof")
             .args(["-tiTCP:9223", "-sTCP:LISTEN"])
             .output();
-
-        match output {
-            Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .map(str::to_string)
-                .collect(),
-            _ => Vec::new(),
+        if let Ok(output) = &lsof {
+            if output.status.success() {
+                let pids: Vec<String> = String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                if !pids.is_empty() {
+                    return pids;
+                }
+            }
         }
+        // fallback：ss -H -tlnp 'sport = :9223'，解析 users:(("proc",pid=NNN,fd=...))
+        let ss = Command::new("ss")
+            .args(["-H", "-tlnp", "sport = :9223"])
+            .output();
+        if let Ok(output) = ss {
+            if output.status.success() {
+                let text = String::from_utf8_lossy(&output.stdout);
+                let mut pids = Vec::new();
+                for line in text.lines() {
+                    let mut rest = line;
+                    while let Some(idx) = rest.find("pid=") {
+                        rest = &rest[idx + 4..];
+                        let pid: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+                        if !pid.is_empty() && !pids.contains(&pid) {
+                            pids.push(pid);
+                        }
+                    }
+                }
+                return pids;
+            }
+        }
+        Vec::new()
     }
 }
 

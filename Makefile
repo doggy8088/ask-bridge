@@ -82,12 +82,15 @@ check-node: ## Verify that Node.js and npx are installed (required to launch Chr
 install-browser: ## Install Google Chrome if it is missing (required by Chrome DevTools MCP)
 	@if [ -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]; then \
 		echo "$(GREEN)Google Chrome is already installed.$(RESET)"; \
+	elif command -v google-chrome >/dev/null 2>&1 || command -v google-chrome-stable >/dev/null 2>&1 || command -v chromium >/dev/null 2>&1 || command -v chromium-browser >/dev/null 2>&1 || [ -x "/opt/google/chrome/chrome" ]; then \
+		echo "$(GREEN)Google Chrome / Chromium is already installed.$(RESET)"; \
 	elif command -v brew >/dev/null 2>&1; then \
 		echo "$(CYAN)Installing Google Chrome with Homebrew...$(RESET)"; \
 		brew install --cask google-chrome; \
 	else \
-		echo "$(YELLOW)Google Chrome is required by Chrome DevTools MCP but was not found.$(RESET)"; \
-		echo "$(YELLOW)Install Homebrew or install Chrome manually from https://www.google.com/chrome/ and rerun make install.$(RESET)"; \
+		echo "$(YELLOW)Google Chrome / Chromium is required by Chrome DevTools MCP but was not found.$(RESET)"; \
+		echo "$(YELLOW)macOS: install Homebrew, or install Chrome from https://www.google.com/chrome/ .$(RESET)"; \
+		echo "$(YELLOW)Linux: install via your package manager (e.g. apt install google-chrome-stable, or chromium), then rerun make install.$(RESET)"; \
 		exit 1; \
 	fi
 

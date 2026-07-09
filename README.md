@@ -46,7 +46,8 @@
 執行此工具需要：
 
 1. 已安裝 `node` 與 `npx`，用於自動啟動 `chrome-devtools-mcp` server。
-2. 已安裝 Google Chrome。macOS 預設路徑通常是 `/Applications/Google Chrome.app`。若缺少 Chrome，且系統有 Homebrew，`make install` 會自動安裝。
+2. 已安裝 Google Chrome。macOS 預設路徑通常是 `/Applications/Google Chrome.app`；Linux 會偵測 `/usr/bin/google-chrome`、`/opt/google/chrome/chrome` 等常見路徑並掃 `PATH`（亦支援 Chromium）；Windows 會偵測 `Program Files` 與 `LocalAppData`。若 macOS 缺少 Chrome 且系統有 Homebrew，`make install` 會自動安裝。
+3. （macOS / Linux）需要 `lsof` 偵測佔用 9223 port 的行程；Linux 亦支援 `ss`（iproute2）作為備援。多數系統預裝其一，精簡容器映像可能需自行安裝，否則行程偵測／重啟邏輯可能失效。
 
 不需要安裝全域 `mcp-cli` 執行檔。Rust binary 會透過 Cargo 從 `https://github.com/doggy8088/mcp-cli` 使用 `mcp-cli` 作為 dependency。
 

@@ -49,7 +49,8 @@ Unlike typical API clients, `ask-bridge` operates inside a real Chrome browser w
 To run this tool, you need:
 
 1. **`node`/`npx`** installed to automatically launch the `chrome-devtools-mcp` server.
-2. **Google Chrome** installed (normally located at `/Applications/Google Chrome.app` on macOS). `make install` installs it with Homebrew when it is missing and Homebrew is available.
+2. **Google Chrome** installed. Detected at `/Applications/Google Chrome.app` on macOS; at `/usr/bin/google-chrome`, `/opt/google/chrome/chrome`, etc. and via `PATH` (Chromium also supported) on Linux; and under `Program Files` / `LocalAppData` on Windows. `make install` installs it with Homebrew on macOS when it is missing and Homebrew is available.
+3. **`lsof`** (macOS / Linux) to detect the process listening on port 9223; Linux also supports `ss` (iproute2) as a fallback. Most systems ship one of them; minimal container images may need it installed, otherwise process detection/restart can fail.
 
 You do **not** need a global `mcp-cli` executable. The Rust binary uses `mcp-cli` as a Cargo dependency from `https://github.com/doggy8088/mcp-cli`.
 
