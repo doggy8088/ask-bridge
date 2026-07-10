@@ -1382,6 +1382,7 @@ fn ask_chrome_pids_on_debug_port(profile_path: &str) -> Vec<String> {
     inspect_chrome_debug_port(profile_path).ask_pids
 }
 
+#[cfg(target_os = "windows")]
 fn parse_windows_netstat_listener_pids(output: &str, port: u16) -> Vec<String> {
     let mut pids = Vec::new();
     for line in output.lines() {
@@ -1439,6 +1440,7 @@ fn debug_port_listener_pids() -> Vec<String> {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn parse_wmic_column_value(output: &str) -> Option<String> {
     let mut non_empty_lines = output
         .lines()
