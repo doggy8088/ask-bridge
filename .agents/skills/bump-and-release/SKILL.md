@@ -1,6 +1,6 @@
 ---
 name: bump-and-release
-description: 負責升級專案版本（patch、minor 或 major），更新所有設定檔與原始碼中的版本號，並協調發布流程、Git 提交、Tag 推送與 GitHub Release 繁體中文發行說明更新。
+description: 負責升級專案版本（patch、minor 或 major），更新所有設定檔與原始碼中的版本號，並協調發布流程、Git 提交、遠端 CI 成功閘門、Tag 推送與 GitHub Release 繁體中文發行說明更新。
 ---
 
 # `bump-and-release` 技能說明
@@ -57,14 +57,21 @@ cargo check
 npm test
 ```
 
-### 第四步：Git 提交、打 Tag 與推送
+### 第四步：Git 提交並推送主分支
 遵照專案的 Git 規範，在提交時應將所有版本號相關的修改合併為一個單一提交，並採用 **Conventional Commits 1.0.0** 規範，日誌應提供完整的繁體中文（zh-tw）說明。
 
-推送主分支後，必須為該版本建立對應的 **Git Tag**（格式為 `vX.Y.Z`），並將 Tag 獨立推送到遠端倉庫以完成正式釋出。
+此步驟只允許推送 `main`，不得建立或推送 Tag。推送前先記錄待發布 commit SHA，後續 CI 查詢、Tag 建立與一致性檢查都必須使用此不可變 SHA，不得改用等待期間可能變動的 `HEAD`。
 
 #### 執行範例：
 ```bash
-# 1. 提交所有版本相關變更
+set -euo pipefail
+
+# 1. 提交所有版本相關變更，且確認目前位於 main
+[ "$(git branch --show-current)" = "main" ] || {
+  echo "目前不在 main；禁止發布。" >&2
+  exit 1
+}
+
 git add .
 
 commit_msg_file="$(mktemp -t codex-commit-message)"
@@ -80,16 +87,104 @@ chore(release): bump version to X.Y.Z
 EOF
 
 git commit -F "$commit_msg_file"
-git push
-
-# 2. 建立帶有註解的 Git Tag (以 vX.Y.Z 為例)
-git tag -a vX.Y.Z -m "Release vX.Y.Z"
-
-# 3. 推送 Tag 到遠端（將觸發 GitHub Releases 流程）
-git push origin vX.Y.Z
+release_commit="$(git rev-parse HEAD)"
+git push origin main
 ```
 
-### 第五步：更新 GitHub Release 繁體中文發行說明
+### 第五步：等待並確認遠端 CI 成功
+本機驗證通過後，仍必須等待 GitHub Actions 的 `.github/workflows/ci.yml` 對同一個 release commit 完成。只有符合以下全部條件，才能進入 Tag 步驟：
+
+1. Workflow 必須是 `ci.yml`，事件必須是 `push`。
+2. `headSha` 必須等於第四步保存的 `release_commit`。
+3. `status` 必須是 `completed`，`conclusion` 必須是 `success`。
+4. CI 完成後，`origin/main` 仍必須精確指向 `release_commit`。
+
+#### CI 品質閘門範例：
+```bash
+repo="doggy8088/ask-bridge"
+
+# 先確認 main push 已更新到待發布 commit
+git fetch origin main --quiet
+if [ "$(git rev-parse refs/remotes/origin/main)" != "$release_commit" ]; then
+  echo "遠端 main 與待發布 commit 不一致；禁止建立或推送 Tag。" >&2
+  exit 1
+fi
+
+# GitHub Actions 建立 run 可能有短暫延遲；最多等待 5 分鐘讓 run 出現
+ci_run_id=""
+for _ in $(seq 1 30); do
+  ci_run_id="$(gh run list \
+    --repo "$repo" \
+    --workflow ci.yml \
+    --event push \
+    --commit "$release_commit" \
+    --limit 1 \
+    --json databaseId \
+    --jq '.[0].databaseId // empty')"
+  [ -n "$ci_run_id" ] && break
+  sleep 10
+done
+
+if [ -z "$ci_run_id" ]; then
+  echo "逾時仍找不到 commit $release_commit 的 main push CI；禁止建立或推送 Tag。" >&2
+  exit 1
+fi
+
+# failure、cancelled、timed_out 或其他非 success 結果都必須停止
+if ! gh run watch "$ci_run_id" --repo "$repo" --exit-status --interval 10; then
+  gh run view "$ci_run_id" --repo "$repo"
+  echo "CI run $ci_run_id 未成功；禁止建立或推送 Tag。" >&2
+  exit 1
+fi
+
+# watch 結束後再次驗證不可變後置條件，避免誤用其他 run
+ci_state="$(gh run view "$ci_run_id" \
+  --repo "$repo" \
+  --json headSha,event,status,conclusion \
+  --jq '[.headSha,.event,.status,.conclusion] | @tsv')"
+expected_ci_state="$(printf '%s\tpush\tcompleted\tsuccess' "$release_commit")"
+if [ "$ci_state" != "$expected_ci_state" ]; then
+  echo "CI 後置條件不符：$ci_state；禁止建立或推送 Tag。" >&2
+  exit 1
+fi
+
+# 等待期間 main 可能已前進；正式發布只允許目前 main 的最新 commit
+git fetch origin main --quiet
+if [ "$(git rev-parse refs/remotes/origin/main)" != "$release_commit" ]; then
+  echo "CI 完成後遠端 main 已變更；應以新的 main HEAD 重新執行發布流程。" >&2
+  exit 1
+fi
+```
+
+> [!CAUTION]
+> 找不到 CI run、等待逾時、`gh auth`／GitHub API／網路錯誤，或任何非 `success` 結果時，一律停止。不得以本機測試、PR CI、手動 workflow run 或舊 commit 的成功結果取代此閘門。修正問題若產生新 commit，必須更新 `release_commit`、重新推送並等待新 commit 的 CI。
+
+### 第六步：建立並推送 Tag
+CI 品質閘門成功後，才可建立對應的 **Git Tag**（格式為 `vX.Y.Z`）。Tag 必須明確指向已通過 CI 的 `release_commit`，不得依賴目前 `HEAD`，也不得覆寫或強制推送既有 Tag。
+
+#### 執行範例：
+```bash
+tag="vX.Y.Z"
+
+# 本機或遠端已有同名 Tag 時停止，先釐清既有 release 狀態
+if git show-ref --verify --quiet "refs/tags/$tag"; then
+  echo "本機 Tag $tag 已存在；禁止覆寫。" >&2
+  exit 1
+fi
+
+if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+  echo "遠端 Tag $tag 已存在；禁止覆寫。" >&2
+  exit 1
+fi
+
+# 建立帶有註解的 Tag，明確鎖定已通過 CI 的 commit
+git tag -a "$tag" "$release_commit" -m "Release $tag"
+
+# 推送 Tag 後會觸發 Release，Release 發布後再觸發 Publish npm
+git push origin "refs/tags/$tag"
+```
+
+### 第七步：更新 GitHub Release 繁體中文發行說明
 GitHub Release 建立完成後，必須立即補上繁體中文（zh-tw）發行說明。不要只保留 GitHub 自動產生的 `Full Changelog` 連結。
 
 #### 資料蒐集

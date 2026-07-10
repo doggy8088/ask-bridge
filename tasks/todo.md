@@ -288,3 +288,36 @@ pm test。
 - [ ] Run fmt/check/tests
 - [ ] Commit release bump
 - [ ] Create annotated tag (本地)
+
+---
+
+# 2026-07-10 強化 bump-and-release CI 發布閘門
+
+## Goal + Acceptance Criteria
+- [x] 確認 CI、Release 與 Publish npm 的實際觸發鏈。
+- [x] 發布 SOP 必須先推送 `main`，等待同一 commit 的 `CI` push run 完成且成功，才允許建立與推送 Tag。
+- [x] CI 查詢必須鎖定 workflow、event 與 commit SHA，不能誤用 PR、手動或舊 commit 的結果。
+- [x] CI 失敗、逾時、查詢錯誤、main 前進或 Tag 衝突時必須安全停止。
+- [ ] 通過 skill 結構驗證與 `cargo fmt --all -- --check`。
+
+## Risk & Rollback
+- Risk level: low
+- Affected components: AI Agent 的版本發布作業順序；不修改產品程式碼或 GitHub Actions。
+- Rollback strategy: revert `.agents/skills/bump-and-release/SKILL.md` 的 CI 閘門段落。
+- Monitoring signals: Agent 不得在對應 release commit 的 CI 顯示 `completed/success` 前推送 `vX.Y.Z` Tag。
+
+## Dependencies & Environment
+- `gh` 必須已登入並能讀取 `doggy8088/ask-bridge` 的 Actions runs。
+- `.github/workflows/ci.yml` 必須維持 `main` push 觸發；正式發布仍由 `v*.*.*` Tag 觸發 `.github/workflows/release.yml`。
+
+## Working Notes
+- Release workflow 執行四平台正式建置與封裝，並未重跑 CI 的 `cargo test`／`npm test`，不需要合併 workflow。
+- GitHub Actions run 建立具有短暫 eventual consistency，因此 SOP 以限時輪詢等待 run 出現，再用 `gh run watch --exit-status` 等待結果。
+
+## Checklist
+- [x] Review `tasks/lessons.md`
+- [x] Locate current skill and workflow contracts
+- [x] Design fail-closed CI gate
+- [x] Update release SOP and exact commands
+- [ ] Validate skill structure and Rust formatting
+- [ ] Summarize changes + verification story
