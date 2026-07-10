@@ -38,6 +38,7 @@
 - **Pipe 與 stdin 支援**：支援透過 standard input 傳入 prompt，例如 `cat report.txt | ask-bridge "summarize this"`。
 - **圖片與文件上傳**：可透過 `--image` 附上圖片（支援 ChatGPT 與 Claude），或透過 `--file` 附上文件（PDF、Word、Excel、純文字、Markdown、JSON 等皆可），一次可指定多個檔案；Gemini 目前支援 `--file`，不支援 `--image` 圖片輸入。
 - **模型切換**：使用 `--model` 在送出 prompt 前自動切換 provider 模型（如 ChatGPT 的 `GPT-5.4`、`o3`，Gemini 的 `3.5 Flash`、`3.1 Pro`，或 Claude 的 `Sonnet`、`Opus`）。
+- **回應超時**：使用 `--timeout <秒數>` 設定等待回應上限，預設為 `300` 秒。
 - **預設安靜模式與 verbose 模式**：預設只輸出最終回覆；加上 `--verbose` 可顯示背景瀏覽器控制流程。
 - **版本資訊**：使用 `-v` 或 `--version` 顯示目前版本號。
 
@@ -232,7 +233,23 @@ Verbose 模式會顯示類似以下流程：
 - 送出訊息。
 - 等待 provider 回覆。
 
-### 6. 顯示版本
+### 6. 回應超時（`--timeout`）
+
+回答等待預設 300 秒，若 provider 回應時間較長可提高（或降低）等待上限：
+
+```bash
+ask-bridge "請幫我整理這份報告" --timeout 600
+```
+
+你也可以明確設定較短時間：
+
+```bash
+ask-bridge "簡短回覆" --timeout 60
+```
+
+超過設定秒數仍未完成時，會輸出超時警告並直接結束回應等待流程。
+
+### 7. 顯示版本
 
 使用 `-v` 或 `--version` 顯示目前版本號：
 
@@ -240,7 +257,7 @@ Verbose 模式會顯示類似以下流程：
 ask-bridge -v
 ```
 
-### 7. Pipe 與 stdin
+### 8. Pipe 與 stdin
 
 可透過 pipe 將文字或檔案內容傳入 `ask-bridge`：
 

@@ -476,6 +476,10 @@ struct Cli {
     #[arg(long = "file", value_name = "FILE", num_args = 1)]
     files: Vec<String>,
 
+    /// Maximum time in seconds to wait for the provider response.
+    #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..))]
+    timeout: u64,
+
     /// Switch the provider model before sending the prompt.
     /// ChatGPT examples: "GPT-5.5", "GPT-5.4", "GPT-5.3", "o3", or thinking levels such as
     /// "即時", "中等", "高", "超高", "專業", "智慧". Gemini examples: "3.5 Flash",
@@ -501,6 +505,9 @@ enum Commands {
     Get {
         /// Optional conversation URL to fetch before copying the latest response.
         url: Option<String>,
+        /// Print verbose debugging status messages.
+        #[arg(long, default_value_t = false)]
+        verbose: bool,
     },
     /// Open Chrome browser and wait for manual login
     Login,
@@ -2123,6 +2130,23 @@ mod tests {
 
         let cli = Cli::try_parse_from(["ask-bridge", "screenshot"]).unwrap();
         assert!(matches!(cli.command, Some(Commands::Screenshot)));
+    }
+
+    #[test]
+    fn parses_verbose_get_command_flag() {
+        let url = "https://chatgpt.com/c/6a50fe34-43c0-83ee-ab86-d41adf91625e";
+        let cli = Cli::try_parse_from(["ask-bridge", "get", "--verbose", url]).unwrap();
+        if let Some(Commands::Get {
+            url: parsed_url,
+            verbose,
+        }) = cli.command
+        {
+            assert_eq!(parsed_url, Some(url.to_string()));
+            assert!(verbose);
+        } else {
+            panic!("expected get command");
+        }
+        assert!(!cli.verbose);
     }
 
     #[test]
@@ -4971,7 +4995,12 @@ fn print_chrome_diagnostics(profile_path: &str) {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    FORWARD_MCP_STDERR.store(cli.verbose, std::sync::atomic::Ordering::Relaxed);
+    let command_verbose = match &cli.command {
+        Some(Commands::Get { verbose, .. }) => cli.verbose || *verbose,
+        _ => cli.verbose,
+    };
+
+    FORWARD_MCP_STDERR.store(command_verbose, std::sync::atomic::Ordering::Relaxed);
 
     if matches!(cli.command, Some(Commands::Config)) {
         if let Err(e) = run_config_command(cli.provider) {
@@ -4995,7 +5024,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
-    if !cli.verbose {
+    if !command_verbose {
         // SAFETY: Called before spawning other threads and before loading MCP config.
         unsafe {
             std::env::remove_var("MCP_DEBUG");
@@ -5013,7 +5042,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let is_headless = match &cli.command {
         Some(Commands::Login) => false, // Force headful only for login command so user can see it to log in
-        _ => cli.headless, // Respect --headless (defaults to true) for all other commands (including Open and Get)
+        Some(Commands::Get { .. }) => false, // Default get to headful for debugging by default
+        _ => cli.headless, // Respect --headless (defaults to true) for all other commands (including Open)
     };
 
     if matches!(cli.command, Some(Commands::Close)) {
@@ -5042,7 +5072,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
-    let config_path = match write_mcp_config(!cli.verbose, is_headless) {
+    let config_path = match write_mcp_config(!command_verbose, is_headless) {
         Ok(path) => path,
         Err(e) => {
             eprintln!("Error: {}", e);
@@ -5050,7 +5080,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    if let Err(e) = start_chrome_if_needed(is_headless, cli.verbose) {
+    if let Err(e) = start_chrome_if_needed(is_headless, command_verbose) {
         eprintln!("Error starting Chrome: {}", e);
         std::process::exit(1);
     }
@@ -5060,9 +5090,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Commands::Open { url } => {
                 if let Some(url) = url {
                     let page_provider = Provider::from_url(&url).unwrap_or(provider);
-                    if let Err(e) =
-                        open_url_tab(&config_path, page_provider, &url, is_headless, cli.verbose)
-                    {
+                    if let Err(e) = open_url_tab(
+                        &config_path,
+                        page_provider,
+                        &url,
+                        is_headless,
+                        command_verbose,
+                    ) {
                         eprintln!("Error opening URL: {}", e);
                         std::process::exit(1);
                     }
@@ -5083,7 +5117,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 &config_path,
                                 page_provider,
                                 cli.image_output.as_deref(),
-                                cli.verbose,
+                                command_verbose,
                             ) {
                                 eprintln!("Error downloading images: {}", e);
                             }
@@ -5094,9 +5128,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 } else {
-                    if let Err(e) =
-                        ensure_provider_tab(&config_path, provider, false, is_headless, cli.verbose)
-                    {
+                    if let Err(e) = ensure_provider_tab(
+                        &config_path,
+                        provider,
+                        false,
+                        is_headless,
+                        command_verbose,
+                    ) {
                         eprintln!("Error ensuring {} tab: {}", provider.display_name(), e);
                         std::process::exit(1);
                     }
@@ -5104,20 +5142,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 return Ok(());
             }
-            Commands::Get { url } => {
+            Commands::Get { url, .. } => {
                 let mut page_provider = provider;
                 if let Some(url) = url {
                     page_provider = Provider::from_url(&url).unwrap_or(provider);
-                    if let Err(e) =
-                        open_url_tab(&config_path, page_provider, &url, is_headless, cli.verbose)
-                    {
+                    if let Err(e) = open_url_tab(
+                        &config_path,
+                        page_provider,
+                        &url,
+                        is_headless,
+                        command_verbose,
+                    ) {
                         eprintln!("Error opening URL: {}", e);
                         std::process::exit(1);
                     }
                 } else {
-                    if let Err(e) =
-                        ensure_provider_tab(&config_path, provider, false, is_headless, cli.verbose)
-                    {
+                    if let Err(e) = ensure_provider_tab(
+                        &config_path,
+                        provider,
+                        false,
+                        is_headless,
+                        command_verbose,
+                    ) {
                         eprintln!("Error ensuring {} tab: {}", provider.display_name(), e);
                         std::process::exit(1);
                     }
@@ -5139,7 +5185,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             &config_path,
                             page_provider,
                             cli.image_output.as_deref(),
-                            cli.verbose,
+                            command_verbose,
                         ) {
                             eprintln!("Error downloading images: {}", e);
                         }
@@ -5153,7 +5199,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Commands::Login => {
                 if let Err(e) =
-                    ensure_provider_tab(&config_path, provider, false, is_headless, cli.verbose)
+                    ensure_provider_tab(&config_path, provider, false, is_headless, command_verbose)
                 {
                     eprintln!("Error ensuring {} tab: {}", provider.display_name(), e);
                     std::process::exit(1);
@@ -5166,7 +5212,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut buffer = String::new();
                 io::stdin().read_line(&mut buffer)?;
 
-                match check_login_status(&config_path, provider, cli.verbose) {
+                match check_login_status(&config_path, provider, command_verbose) {
                     Ok(LoginState::LoggedIn) => println!(
                         "Success: Logged in successfully! You can now use the `ask-bridge` command."
                     ),
@@ -5178,7 +5224,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ),
                     Err(e) => println!("Warning: Failed to verify login status: {}", e),
                 }
-                if cli.verbose {
+                if command_verbose {
                     match chrome_profile_path() {
                         Ok(profile_path) => print_chrome_diagnostics(&profile_path),
                         Err(e) => eprintln!("Warning: Failed to locate Chrome profile: {}", e),
@@ -5192,7 +5238,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let list_res = call_mcp_tool(&config_path, "list_pages", serde_json::json!({}))?;
                 println!("All pages: {:?}", list_res);
                 if let Err(e) =
-                    ensure_provider_tab(&config_path, provider, false, is_headless, cli.verbose)
+                    ensure_provider_tab(&config_path, provider, false, is_headless, command_verbose)
                 {
                     eprintln!("Error ensuring {} tab: {}", provider.display_name(), e);
                     std::process::exit(1);
@@ -5223,7 +5269,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Commands::Screenshot => {
                 if let Err(e) =
-                    ensure_provider_tab(&config_path, provider, false, is_headless, cli.verbose)
+                    ensure_provider_tab(&config_path, provider, false, is_headless, command_verbose)
                 {
                     eprintln!("Error ensuring {} tab: {}", provider.display_name(), e);
                     std::process::exit(1);
@@ -5294,7 +5340,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(0);
     }
 
-    if let Err(e) = ensure_provider_tab(&config_path, provider, cli.new, is_headless, cli.verbose) {
+    if let Err(e) = ensure_provider_tab(
+        &config_path,
+        provider,
+        cli.new,
+        is_headless,
+        command_verbose,
+    ) {
         eprintln!("Error ensuring {} tab: {}", provider.display_name(), e);
         std::process::exit(1);
     }
@@ -5307,7 +5359,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Verify login
-    match check_login_status(&config_path, provider, cli.verbose) {
+    match check_login_status(&config_path, provider, command_verbose) {
         Ok(LoginState::LoggedOut) => {
             eprintln!(
                 "\nError: You are not logged in to {}.",
@@ -5326,7 +5378,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         Ok(LoginState::LoggedIn) => {}
-        Err(e) if cli.verbose => {
+        Err(e) if command_verbose => {
             eprintln!(
                 "Warning: Failed to verify login status: {}. Attempting to proceed...",
                 e
@@ -5337,7 +5389,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Switch model if requested (before uploading attachments / typing the prompt)
     if let Some(m) = &cli.model
-        && let Err(e) = switch_model(&config_path, provider, m, cli.verbose)
+        && let Err(e) = switch_model(&config_path, provider, m, command_verbose)
     {
         eprintln!("Error switching model: {}", e);
         std::process::exit(1);
@@ -5350,7 +5402,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             provider,
             &cli.images,
             &cli.files,
-            cli.verbose,
+            command_verbose,
         )
     {
         eprintln!("Error attaching images/files: {}", e);
@@ -5372,17 +5424,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as usize;
 
-    if cli.verbose {
+    if command_verbose {
         println!("Setting prompt text and submitting...");
     }
-    let status = submit_prompt_to_provider(&config_path, provider, &prompt, cli.verbose)
+    let status = submit_prompt_to_provider(&config_path, provider, &prompt, command_verbose)
         .map_err(|e| format!("Text entry or submission failed: {}", e))?;
 
-    if cli.verbose {
+    if command_verbose {
         println!("Prompt submitted successfully: {}", status);
     }
 
-    if cli.verbose {
+    if command_verbose {
         println!("Waiting for {} response...", provider.display_name());
     }
 
@@ -5393,8 +5445,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let spinner_frames = vec!["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     let mut spinner_idx = 0;
 
-    while !finished && wait_cycles < 1200 {
-        // Max 120 seconds (1200 * 100ms)
+    let max_wait_cycles: usize =
+        usize::try_from(cli.timeout.saturating_mul(10)).unwrap_or(usize::MAX);
+    while !finished && wait_cycles < max_wait_cycles {
+        // Max wait time: timeout seconds (timeout * 10 * 100ms)
         if is_terminal {
             let frame = spinner_frames[spinner_idx % spinner_frames.len()];
             print!(
@@ -5445,7 +5499,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ) {
                 Ok(res) => res,
                 Err(e) => {
-                    if cli.verbose {
+                    if command_verbose {
                         eprintln!(
                             "Warning: Failed to poll {} response: {}",
                             provider.display_name(),
@@ -5483,11 +5537,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if !finished {
-        eprintln!("\nWarning: Output stream did not complete within the timeout period.");
+        eprintln!(
+            "\nWarning: Output stream did not complete within the timeout period ({} seconds).",
+            cli.timeout
+        );
     }
 
     if finished {
-        if cli.verbose {
+        if command_verbose {
             println!(
                 "Copying final response from {} toolbar...",
                 provider.display_name()
@@ -5516,7 +5573,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &config_path,
             provider,
             cli.image_output.as_deref(),
-            cli.verbose,
+            command_verbose,
         )
         .map_err(|e| {
             eprintln!("Error downloading images: {}", e);
@@ -5546,7 +5603,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(ref output_path) = cli.output {
         if let Err(e) = std::fs::write(output_path, &last_markdown) {
             eprintln!("Error writing output file: {}", e);
-        } else if cli.verbose {
+        } else if command_verbose {
             println!("Successfully wrote Markdown response to {}", output_path);
         }
     }

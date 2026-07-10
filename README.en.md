@@ -39,6 +39,7 @@ Unlike typical API clients, `ask-bridge` operates inside a real Chrome browser w
 - **🖥️ Pipe & Stdin Support**: Supports piping prompts via `stdin` (e.g. `cat report.txt | ask-bridge "summarize this"`).
 - **📎 Image & File Attachments**: Attach local images with `--image` (supported on ChatGPT and Claude), or documents (PDF, Word, Excel, plain text, Markdown, JSON, etc.) with `--file`; Gemini currently supports `--file` and rejects `--image`.
 - **🔀 Model Switching**: Use `--model` to switch the provider model before the prompt is sent, such as ChatGPT `GPT-5.4`, Gemini `3.5 Flash`, or Claude `Sonnet`.
+- **Response Timeout**: Use `--timeout <seconds>` to control how long to wait for a provider response, defaulting to `300` seconds.
 - **🔍 Quiet by Default & Verbose Mode**: Quiet and clean output by default (displaying only the generated response), with an optional `--verbose` flag to display full browser state logs if needed.
 - **Version Info**: Use `-v` or `--version` to print the current version number.
 
@@ -233,7 +234,23 @@ This will print every stage of the browser automation:
 - Submitting...
 - Waiting for provider response...
 
-### 6. Version Info
+### 6. Response Timeout (`--timeout`)
+
+The default wait time is 300 seconds. If a provider takes longer, increase (or decrease) the timeout:
+
+```bash
+ask-bridge "Please summarize this report" --timeout 600
+```
+
+You can also set a shorter timeout:
+
+```bash
+ask-bridge "Short answer" --timeout 60
+```
+
+If the response does not complete within the configured seconds, `ask-bridge` will stop waiting and print a timeout warning.
+
+### 7. Version Info
 
 Use `-v` or `--version` to print the current version number:
 
@@ -241,7 +258,7 @@ Use `-v` or `--version` to print the current version number:
 ask-bridge -v
 ```
 
-### 7. Piping & Stdin Support
+### 8. Piping & Stdin Support
 
 You can pipe text or files directly into `ask-bridge`:
 
