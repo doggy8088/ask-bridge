@@ -1,6 +1,6 @@
 {
   "name": "ask-bridge",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Automate ChatGPT or Gemini from the command line through Chrome.",
   "bin": {
     "ask-bridge": "npm/cli.cjs",
