@@ -17,8 +17,8 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
-      - name: Update npm to latest
-        run: npm install -g npm@latest
+      - name: Install supported npm version
+        run: npm install -g npm@11.18.0
       - name: Align npm version with release tag
         if: github.event_name == 'release'
         run: |
