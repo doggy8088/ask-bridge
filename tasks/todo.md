@@ -1,3 +1,40 @@
+# 2026-07-10 修正 Windows MCP Node 版本錯誤診斷
+
+## Goal + Acceptance Criteria
+- [x] Node.js `v20.17.0` 不再一路進入 MCP `initialize` 後只顯示誤導性的 schema 錯誤。
+- [x] Windows 安裝器在下載 binary 前驗證 `chrome-devtools-mcp@latest` 的 Node engines 契約。
+- [x] 既有安裝、直接下載與 npm 安裝都由 Rust runtime preflight 兜底。
+- [x] `config` 與 `close` 等不需 MCP 的命令不受 Node 版本檢查影響。
+- [x] 回歸測試涵蓋 `20.19`、`22.12` 邊界、較舊版本與無效版本輸出。
+- [ ] 通過格式、目標測試、完整測試與 `cargo check` 驗證。
+
+## Risk & Rollback
+- Risk level: low
+- Affected components: Windows 安裝前置檢查、所有需要 MCP 的 runtime 命令。
+- Rollback strategy: revert `src/main.rs` 與 `install.ps1` 的 Node preflight；不涉及資料、設定格式或 migration。
+- Monitoring signals: 不相容 Node 應在 Chrome 啟動前顯示實際版本與支援範圍，不應再進入 MCP `initialize`。
+
+## Dependencies & Environment
+- 上游 `chrome-devtools-mcp@latest` engines：`^20.19.0 || ^22.12.0 || >=23`。
+- 使用者截圖：Node.js `v20.17.0`、npm/npx `11.12.1`、ask-bridge `0.2.2`。
+- Cargo target 輸出沿用 `%TEMP%\ask-bridge-target`，避免 `G:` 空間不足。
+
+## Working Notes
+- Windows quiet MCP 設定使用 `cmd.exe /c ... 2>nul`，因此 mcp-cli 只能回報 `No stderr output available`。
+- `Check tool arguments match the expected schema` 是 mcp-cli 的通用 fallback，不是本案 schema 錯誤的證據。
+- Runtime preflight 位於 `config`/`close` early return 之後、`write_mcp_config` 與 Chrome 啟動之前。
+
+## Checklist
+- [x] Review `tasks/lessons.md`
+- [x] Confirm upstream Node engines and reproduce the version mismatch
+- [x] Locate MCP startup and installer validation paths
+- [x] Implement runtime and Windows installer fail-fast checks
+- [x] Add Node version boundary regression tests
+- [ ] Run targeted and full verification
+- [ ] Summarize changes + verification story
+
+---
+
 # 2026-07-10 修正 Windows ChatGPT 登入延續回歸
 
 ## Goal + Acceptance Criteria

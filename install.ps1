@@ -18,6 +18,28 @@ if (-not $npxCheck) {
     exit 1
 }
 
+$nodeVersionOutput = & node --version 2>&1
+$nodeVersionExitCode = $LASTEXITCODE
+$nodeVersionText = ($nodeVersionOutput | Out-String).Trim()
+
+if ($nodeVersionExitCode -ne 0 -or $nodeVersionText -notmatch '^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$') {
+    Write-Error "Could not determine a supported Node.js version. Install a current Node.js LTS release, reopen PowerShell, and retry."
+    exit 1
+}
+
+$nodeMajor = [int]$Matches[1]
+$nodeMinor = [int]$Matches[2]
+$nodePatch = [int]$Matches[3]
+$nodeVersionSupported = `
+    ($nodeMajor -eq 20 -and ($nodeMinor -gt 19 -or ($nodeMinor -eq 19 -and $nodePatch -ge 0))) -or `
+    ($nodeMajor -eq 22 -and ($nodeMinor -gt 12 -or ($nodeMinor -eq 12 -and $nodePatch -ge 0))) -or `
+    ($nodeMajor -ge 23)
+
+if (-not $nodeVersionSupported) {
+    Write-Error "Node.js $nodeVersionText is not supported by chrome-devtools-mcp@latest. Supported versions are ^20.19.0, ^22.12.0, or >=23.0.0. Install a current Node.js LTS release, reopen PowerShell, and retry."
+    exit 1
+}
+
 # 2. Check Google Chrome
 $chromePaths = @(
     "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",

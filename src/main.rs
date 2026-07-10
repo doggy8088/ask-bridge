@@ -675,6 +675,62 @@ fn preferred_provider_page_id(pages: &[PageLoginState]) -> Option<usize> {
         .map(|page| page.id)
 }
 
+fn parse_node_version(output: &str) -> Option<(u64, u64, u64)> {
+    let version = output.trim().strip_prefix('v').unwrap_or(output.trim());
+    let core = version.split(['-', '+']).next()?;
+    let mut parts = core.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+
+    if parts.next().is_some() {
+        return None;
+    }
+
+    Some((major, minor, patch))
+}
+
+fn validate_node_version_output(output: &str) -> Result<(), String> {
+    let version = parse_node_version(output).ok_or_else(|| {
+        format!(
+            "Could not parse Node.js version from '{}'. Install a current Node.js LTS release and retry.",
+            output.trim()
+        )
+    })?;
+    let (major, minor, patch) = version;
+    let supported = (major == 20 && (minor, patch) >= (19, 0))
+        || (major == 22 && (minor, patch) >= (12, 0))
+        || major >= 23;
+
+    if supported {
+        return Ok(());
+    }
+
+    Err(format!(
+        "Node.js v{major}.{minor}.{patch} is not supported by chrome-devtools-mcp@latest. Supported versions are ^20.19.0, ^22.12.0, or >=23.0.0. Install a current Node.js LTS release, reopen the terminal, and retry."
+    ))
+}
+
+fn check_node_runtime() -> Result<(), String> {
+    let output = Command::new("node")
+        .arg("--version")
+        .output()
+        .map_err(|e| {
+            format!(
+                "Failed to run 'node --version': {e}. Install Node.js and ensure it is available in PATH."
+            )
+        })?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "'node --version' exited with status {}. Install a current Node.js LTS release and retry.",
+            output.status
+        ));
+    }
+
+    validate_node_version_output(&String::from_utf8_lossy(&output.stdout))
+}
+
 fn write_mcp_config(quiet_mcp: bool, headless: bool) -> Result<String, String> {
     let mut config_dir = home::home_dir().ok_or("Could not locate home directory")?;
     config_dir.push(".config/ask-bridge");
@@ -1815,6 +1871,45 @@ fn validate_provider_feature_support(provider: Provider, cli: &Cli) -> Result<()
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validates_chrome_devtools_mcp_node_versions() {
+        for version in [
+            "v20.19.0",
+            "v20.20.1\r\n",
+            "v22.12.0",
+            "v22.15.1",
+            "v23.0.0",
+            "v24.4.1",
+        ] {
+            assert!(
+                validate_node_version_output(version).is_ok(),
+                "expected {version:?} to be supported"
+            );
+        }
+
+        for version in ["v18.20.8", "v20.17.0", "v20.18.9", "v21.7.3", "v22.11.0"] {
+            assert!(
+                validate_node_version_output(version).is_err(),
+                "expected {version:?} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn reports_actionable_node_version_errors() {
+        let unsupported = validate_node_version_output("v20.17.0").unwrap_err();
+        assert!(unsupported.contains("v20.17.0"));
+        assert!(unsupported.contains("^20.19.0"));
+        assert!(unsupported.contains("reopen the terminal"));
+
+        for output in ["", "20.19", "not-a-version", "v20.19.0.1"] {
+            assert!(
+                validate_node_version_output(output).is_err(),
+                "expected {output:?} to be rejected"
+            );
+        }
+    }
 
     fn make_test_dir(name: &str) -> std::path::PathBuf {
         let timestamp = std::time::SystemTime::now()
@@ -4861,6 +4956,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         return Ok(());
+    }
+
+    if let Err(e) = check_node_runtime() {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
     }
 
     let config_path = match write_mcp_config(!cli.verbose, is_headless) {
