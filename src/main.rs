@@ -11,6 +11,40 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+const ASK_BRIDGE_CHROME_MARKER: &str = "--ask-bridge-instance";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LoginState {
+    LoggedIn,
+    LoggedOut,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+struct LoginSignals {
+    account: bool,
+    auth_control: bool,
+    auth_path: bool,
+    composer: bool,
+}
+
+impl LoginSignals {
+    fn state(self) -> LoginState {
+        match (
+            self.account,
+            self.auth_control || self.auth_path,
+            self.composer,
+        ) {
+            (true, _, _) => LoginState::LoggedIn,
+            (false, true, _) => LoginState::LoggedOut,
+            (false, false, _) => LoginState::Unknown,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum Provider {
     #[value(name = "chatgpt")]
@@ -70,7 +104,7 @@ impl Provider {
         }
     }
 
-    fn login_check_js(self) -> &'static str {
+    fn login_signals_js(self) -> &'static str {
         match self {
             Provider::ChatGpt => {
                 r#"() => {
@@ -117,11 +151,26 @@ impl Provider {
                         document.querySelector('button[aria-label*="使用者"]');
 
                     const authPath = /\/(auth|login|signup)(\/|$)/i.test(window.location.pathname);
-                    return Boolean(accountMenu) || (Boolean(composer) && !authPath && !visibleAuthButton);
+                    return {
+                        account: isVisible(accountMenu),
+                        auth_control: Boolean(visibleAuthButton),
+                        auth_path: authPath,
+                        composer: Boolean(composer)
+                    };
                 }"#
             }
             Provider::Gemini => {
                 r#"() => {
+                    const isVisible = (el) => {
+                        if (!el) return false;
+                        const style = window.getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        return style.display !== 'none' &&
+                            style.visibility !== 'hidden' &&
+                            style.opacity !== '0' &&
+                            rect.width > 0 &&
+                            rect.height > 0;
+                    };
                     const composer = document.querySelector('div[role="textbox"][aria-label*="Gemini"]') ||
                         document.querySelector('rich-textarea [contenteditable="true"]') ||
                         document.querySelector('.ql-editor[contenteditable="true"]');
@@ -129,11 +178,17 @@ impl Provider {
                         document.querySelector('[aria-label*="Google 帳戶"]') ||
                         document.querySelector('[aria-label*="Google Account"]');
                     const signIn = Array.from(document.querySelectorAll('a, button'))
-                        .some((el) => /Sign in|登入/.test([
-                            el.getAttribute('aria-label'),
-                            el.textContent
-                        ].filter(Boolean).join(' ')));
-                    return Boolean(composer) && (Boolean(account) || !signIn);
+                        .some((el) => isVisible(el) && /Sign in|登入/.test([
+                                el.getAttribute('aria-label'),
+                                el.textContent
+                            ].filter(Boolean).join(' ')));
+                    const authPath = /\/(auth|login|signin|signup)(\/|$)/i.test(window.location.pathname);
+                    return {
+                        account: isVisible(account),
+                        auth_control: Boolean(signIn),
+                        auth_path: authPath,
+                        composer: Boolean(composer)
+                    };
                 }"#
             }
         }
@@ -498,6 +553,22 @@ struct Page {
     selected: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct PageLoginState {
+    id: usize,
+    selected: bool,
+    login_state: LoginState,
+}
+
+fn preferred_provider_page_id(pages: &[PageLoginState]) -> Option<usize> {
+    pages
+        .iter()
+        .find(|page| page.login_state == LoginState::LoggedIn)
+        .or_else(|| pages.iter().find(|page| page.selected))
+        .or_else(|| pages.first())
+        .map(|page| page.id)
+}
+
 fn write_mcp_config(quiet_mcp: bool, headless: bool) -> Result<String, String> {
     let mut config_dir = home::home_dir().ok_or("Could not locate home directory")?;
     config_dir.push(".config/ask-bridge");
@@ -582,6 +653,38 @@ fn chrome_profile_path() -> Result<String, String> {
         .map_err(|e| format!("Failed to create chrome profile directory: {}", e))?;
 
     Ok(profile_dir.to_string_lossy().to_string())
+}
+
+fn chrome_pid_path() -> Result<PathBuf, String> {
+    let mut path = home::home_dir().ok_or("Could not locate home directory")?;
+    path.push(".config/ask-bridge/chrome.pid");
+    Ok(path)
+}
+
+fn write_chrome_pid(pid: u32) -> Result<(), String> {
+    let path = chrome_pid_path()?;
+    std::fs::write(&path, pid.to_string())
+        .map_err(|e| format!("Failed to write {}: {}", path.display(), e))
+}
+
+fn read_chrome_pid() -> Option<String> {
+    let path = chrome_pid_path().ok()?;
+    let pid = std::fs::read_to_string(path).ok()?;
+    let pid = pid.trim();
+    if pid.is_empty() {
+        None
+    } else {
+        Some(pid.to_string())
+    }
+}
+
+fn remove_chrome_pid_file() -> Result<(), String> {
+    let path = chrome_pid_path()?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("Failed to remove {}: {}", path.display(), e)),
+    }
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -698,6 +801,9 @@ fn start_chrome_if_needed(headless: bool, verbose: bool) -> Result<(), String> {
     if TcpStream::connect("127.0.0.1:9223").is_ok() {
         let ask_pids = ask_chrome_pids_on_debug_port(&profile_path);
         if !ask_pids.is_empty() {
+            if let Some(pid) = ask_pids.first().and_then(|pid| pid.parse::<u32>().ok()) {
+                let _ = write_chrome_pid(pid);
+            }
             if headless {
                 // Force hide any existing background Chrome PIDs asynchronously just in case they are currently visible
                 #[cfg(target_os = "macos")]
@@ -751,8 +857,16 @@ fn start_chrome_if_needed(headless: bool, verbose: bool) -> Result<(), String> {
     let mut cmd = Command::new(&chrome_path);
     cmd.arg("--remote-debugging-port=9223")
         .arg(format!("--user-data-dir={}", profile_path))
+        .arg(ASK_BRIDGE_CHROME_MARKER)
         .arg("--no-first-run")
         .arg("--no-default-browser-check");
+
+    #[cfg(target_os = "windows")]
+    {
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    }
 
     if headless {
         cmd.arg("--ask-bridge-background")
@@ -766,6 +880,20 @@ fn start_chrome_if_needed(headless: bool, verbose: bool) -> Result<(), String> {
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|e| format!("Failed to start Google Chrome: {}", e))?;
+
+    let child_pid = child.id();
+    if let Err(e) = write_chrome_pid(child_pid)
+        && verbose
+    {
+        eprintln!("Warning: Failed to record Chrome PID: {}", e);
+    }
+
+    if verbose {
+        println!(
+            "Started ask-bridge Chrome PID {} with profile {}.",
+            child_pid, profile_path
+        );
+    }
 
     if headless {
         #[cfg(target_os = "macos")]
@@ -798,6 +926,7 @@ fn start_chrome_if_needed(headless: bool, verbose: bool) -> Result<(), String> {
         thread::sleep(Duration::from_millis(100));
     }
 
+    let _ = remove_chrome_pid_file();
     Err("Timed out waiting for Chrome to start on port 9223".to_string())
 }
 
@@ -823,15 +952,59 @@ fn command_uses_profile(command: &str, profile_path: &str) -> bool {
         || command.contains(&format!("--user-data-dir {}", profile_path))
 }
 
+fn command_identifies_ask_chrome(command: &str, profile_path: &str) -> bool {
+    command_uses_profile(command, profile_path) || command.contains(ASK_BRIDGE_CHROME_MARKER)
+}
+
+fn find_ask_chrome_owner_pid_with<C, P>(
+    listener_pid: &str,
+    profile_path: &str,
+    mut command_for: C,
+    mut parent_for: P,
+) -> Option<String>
+where
+    C: FnMut(&str) -> Option<String>,
+    P: FnMut(&str) -> Option<String>,
+{
+    let mut current_pid = listener_pid.to_string();
+
+    for _ in 0..16 {
+        if command_for(&current_pid)
+            .map(|command| command_identifies_ask_chrome(&command, profile_path))
+            .unwrap_or(false)
+        {
+            return Some(current_pid);
+        }
+
+        let parent_pid = parent_for(&current_pid)?;
+        if parent_pid.is_empty() || parent_pid == "0" || parent_pid == current_pid {
+            return None;
+        }
+        current_pid = parent_pid;
+    }
+
+    None
+}
+
+fn find_ask_chrome_owner_pid(listener_pid: &str, profile_path: &str) -> Option<String> {
+    find_ask_chrome_owner_pid_with(
+        listener_pid,
+        profile_path,
+        process_command,
+        process_parent_pid,
+    )
+}
+
 fn ask_chrome_pids_on_debug_port(profile_path: &str) -> Vec<String> {
-    debug_port_listener_pids()
-        .into_iter()
-        .filter(|pid| {
-            process_command(pid)
-                .map(|cmd| command_uses_profile(&cmd, profile_path))
-                .unwrap_or(false)
-        })
-        .collect()
+    let mut owner_pids = Vec::new();
+    for listener_pid in debug_port_listener_pids() {
+        if let Some(owner_pid) = find_ask_chrome_owner_pid(&listener_pid, profile_path)
+            && !owner_pids.contains(&owner_pid)
+        {
+            owner_pids.push(owner_pid);
+        }
+    }
+    owner_pids
 }
 
 fn debug_port_listener_pids() -> Vec<String> {
@@ -941,6 +1114,73 @@ fn process_command(pid: &str) -> Option<String> {
     }
 }
 
+fn process_parent_pid(pid: &str) -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        let output = Command::new("wmic")
+            .args([
+                "process",
+                "where",
+                &format!("processid={}", pid),
+                "get",
+                "parentprocessid",
+            ])
+            .output();
+
+        if let Ok(out) = output
+            && out.status.success()
+            && let Some(parent_pid) = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .skip(1)
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+        {
+            return Some(parent_pid.to_string());
+        }
+
+        let output = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!(
+                    "(Get-CimInstance Win32_Process -Filter 'ProcessId = {}').ParentProcessId",
+                    pid
+                ),
+            ])
+            .output();
+
+        if let Ok(out) = output
+            && out.status.success()
+        {
+            let parent_pid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !parent_pid.is_empty() {
+                return Some(parent_pid);
+            }
+        }
+
+        None
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let output = Command::new("ps")
+            .args(["-p", pid, "-o", "ppid="])
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            return None;
+        }
+
+        let parent_pid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if parent_pid.is_empty() {
+            None
+        } else {
+            Some(parent_pid)
+        }
+    }
+}
+
 fn is_debug_chrome_background(profile_path: &str) -> bool {
     ask_chrome_pids_on_debug_port(profile_path)
         .iter()
@@ -954,6 +1194,7 @@ fn is_debug_chrome_background(profile_path: &str) -> bool {
 fn close_ask_chrome_on_debug_port(profile_path: &str) -> Result<bool, String> {
     let listener_pids = debug_port_listener_pids();
     if listener_pids.is_empty() {
+        let _ = remove_chrome_pid_file();
         return Ok(false);
     }
 
@@ -976,7 +1217,11 @@ fn close_ask_chrome_on_debug_port(profile_path: &str) -> Result<bool, String> {
     for pid in &ask_pids {
         #[cfg(target_os = "windows")]
         {
-            let _ = Command::new("taskkill").arg("/PID").arg(pid).status();
+            let _ = Command::new("taskkill")
+                .arg("/F")
+                .arg("/PID")
+                .arg(pid)
+                .status();
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -986,27 +1231,10 @@ fn close_ask_chrome_on_debug_port(profile_path: &str) -> Result<bool, String> {
 
     for _ in 0..50 {
         if TcpStream::connect("127.0.0.1:9223").is_err() {
+            let _ = remove_chrome_pid_file();
             return Ok(true);
         }
         thread::sleep(Duration::from_millis(100));
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        for pid in &ask_pids {
-            let _ = Command::new("taskkill")
-                .arg("/F")
-                .arg("/PID")
-                .arg(pid)
-                .status();
-        }
-
-        for _ in 0..50 {
-            if TcpStream::connect("127.0.0.1:9223").is_err() {
-                return Ok(true);
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
     }
 
     Err("Timed out waiting for existing ask-bridge Chrome to stop".to_string())
@@ -1505,6 +1733,146 @@ mod tests {
         let profile_path = "/Users/will/.config/ask-bridge/chrome-profile";
 
         assert!(!command_uses_profile(command, profile_path));
+    }
+
+    #[test]
+    fn composer_without_account_or_auth_controls_has_unknown_login_state() {
+        let signals = LoginSignals {
+            account: false,
+            auth_control: false,
+            auth_path: false,
+            composer: true,
+        };
+
+        assert_eq!(signals.state(), LoginState::Unknown);
+    }
+
+    #[test]
+    fn account_control_has_logged_in_state() {
+        let signals = LoginSignals {
+            account: true,
+            auth_control: false,
+            auth_path: false,
+            composer: true,
+        };
+
+        assert_eq!(signals.state(), LoginState::LoggedIn);
+    }
+
+    #[test]
+    fn auth_control_or_auth_path_has_logged_out_state() {
+        let visible_auth_control = LoginSignals {
+            account: false,
+            auth_control: true,
+            auth_path: false,
+            composer: true,
+        };
+        let auth_path = LoginSignals {
+            account: false,
+            auth_control: false,
+            auth_path: true,
+            composer: false,
+        };
+
+        assert_eq!(visible_auth_control.state(), LoginState::LoggedOut);
+        assert_eq!(auth_path.state(), LoginState::LoggedOut);
+    }
+
+    #[test]
+    fn empty_login_signals_have_unknown_state() {
+        let signals = LoginSignals {
+            account: false,
+            auth_control: false,
+            auth_path: false,
+            composer: false,
+        };
+
+        assert_eq!(signals.state(), LoginState::Unknown);
+    }
+
+    #[test]
+    fn prefers_logged_in_provider_page_over_selected_page() {
+        let pages = [
+            PageLoginState {
+                id: 2,
+                selected: true,
+                login_state: LoginState::LoggedOut,
+            },
+            PageLoginState {
+                id: 7,
+                selected: false,
+                login_state: LoginState::LoggedIn,
+            },
+        ];
+
+        assert_eq!(preferred_provider_page_id(&pages), Some(7));
+    }
+
+    #[test]
+    fn falls_back_to_selected_provider_page_when_none_are_logged_in() {
+        let pages = [
+            PageLoginState {
+                id: 2,
+                selected: false,
+                login_state: LoginState::Unknown,
+            },
+            PageLoginState {
+                id: 7,
+                selected: true,
+                login_state: LoginState::LoggedOut,
+            },
+        ];
+
+        assert_eq!(preferred_provider_page_id(&pages), Some(7));
+    }
+
+    #[test]
+    fn marker_identifies_ask_bridge_chrome_without_profile_argument() {
+        let command = r#"chrome.exe --type=browser --ask-bridge-instance"#;
+
+        assert!(command_identifies_ask_chrome(
+            command,
+            r"C:\Users\Will\.config\ask-bridge\chrome-profile"
+        ));
+    }
+
+    #[test]
+    fn finds_ask_chrome_owner_in_parent_process_chain() {
+        let commands = std::collections::HashMap::from([
+            ("100", "chrome.exe --type=utility"),
+            (
+                "50",
+                "chrome.exe --remote-debugging-port=9223 --ask-bridge-instance",
+            ),
+        ]);
+        let parents = std::collections::HashMap::from([("100", "50"), ("50", "1")]);
+
+        let owner = find_ask_chrome_owner_pid_with(
+            "100",
+            "/tmp/ask-bridge/chrome-profile",
+            |pid| commands.get(pid).map(|command| (*command).to_string()),
+            |pid| parents.get(pid).map(|parent| (*parent).to_string()),
+        );
+
+        assert_eq!(owner, Some("50".to_string()));
+    }
+
+    #[test]
+    fn rejects_process_chain_without_profile_or_marker() {
+        let commands = std::collections::HashMap::from([
+            ("100", "chrome.exe --type=utility"),
+            ("50", "chrome.exe --remote-debugging-port=9223"),
+        ]);
+        let parents = std::collections::HashMap::from([("100", "50"), ("50", "1")]);
+
+        let owner = find_ask_chrome_owner_pid_with(
+            "100",
+            "/tmp/ask-bridge/chrome-profile",
+            |pid| commands.get(pid).map(|command| (*command).to_string()),
+            |pid| parents.get(pid).map(|parent| (*parent).to_string()),
+        );
+
+        assert_eq!(owner, None);
     }
 }
 
@@ -3476,11 +3844,41 @@ fn ensure_provider_tab(
             }
         }
     } else {
-        // Find any existing page for the selected provider.
-        let provider_page = pages.iter().find(|p| provider.owns_url(&p.url));
+        let provider_pages: Vec<&Page> = pages
+            .iter()
+            .filter(|page| provider.owns_url(&page.url))
+            .collect();
 
-        match provider_page {
-            Some(page) => {
+        let provider_page_id = if provider_pages.len() > 1 {
+            let mut page_states = Vec::with_capacity(provider_pages.len());
+            for page in &provider_pages {
+                call_mcp_tool(
+                    config_path,
+                    "select_page",
+                    serde_json::json!({
+                        "pageId": page.id,
+                        "bringToFront": false
+                    }),
+                )?;
+                let login_state =
+                    check_login_status(config_path, provider).unwrap_or(LoginState::Unknown);
+                page_states.push(PageLoginState {
+                    id: page.id,
+                    selected: page.selected,
+                    login_state,
+                });
+            }
+            preferred_provider_page_id(&page_states)
+        } else {
+            provider_pages.first().map(|page| page.id)
+        };
+
+        match provider_page_id {
+            Some(page_id) => {
+                let page = provider_pages
+                    .iter()
+                    .find(|page| page.id == page_id)
+                    .ok_or_else(|| "Selected provider page disappeared".to_string())?;
                 if verbose {
                     println!(
                         "Found {} tab (ID: {}, selected: {}). Selecting/focusing...",
@@ -3603,20 +4001,31 @@ fn ensure_provider_tab(
     ))
 }
 
-fn check_login_status(config_path: &str, provider: Provider) -> Result<bool, String> {
+fn check_login_status(config_path: &str, provider: Provider) -> Result<LoginState, String> {
     let res = call_mcp_tool(
         config_path,
         "evaluate_script",
         serde_json::json!({
-            "function": provider.login_check_js()
+            "function": provider.login_signals_js()
         }),
     )?;
 
-    if let Ok(parsed) = parse_script_result(&res) {
-        Ok(parsed.as_bool().unwrap_or(false))
-    } else {
-        Ok(false)
-    }
+    let parsed = parse_script_result(&res)?;
+    let signals: LoginSignals = serde_json::from_value(parsed)
+        .map_err(|e| format!("Failed to parse login signals: {}", e))?;
+    Ok(signals.state())
+}
+
+fn print_chrome_diagnostics(profile_path: &str) {
+    let listener_pids = debug_port_listener_pids();
+    let owner_pids = ask_chrome_pids_on_debug_port(profile_path);
+    let recorded_pid = read_chrome_pid().unwrap_or_else(|| "unknown".to_string());
+
+    println!("Chrome diagnostics:");
+    println!("  profile: {}", profile_path);
+    println!("  recorded PID: {}", recorded_pid);
+    println!("  listener PIDs: {:?}", listener_pids);
+    println!("  ask-bridge owner PIDs: {:?}", owner_pids);
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -3811,12 +4220,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 io::stdin().read_line(&mut buffer)?;
 
                 match check_login_status(&config_path, provider) {
-                    Ok(true) => println!(
+                    Ok(LoginState::LoggedIn) => println!(
                         "Success: Logged in successfully! You can now use the `ask-bridge` command."
                     ),
-                    _ => println!(
+                    Ok(LoginState::LoggedOut) => println!(
                         "Warning: We still detected a login button on the page. You might not be fully logged in. Please verify."
                     ),
+                    Ok(LoginState::Unknown) => println!(
+                        "Warning: The page loaded, but ask-bridge could not confirm the account menu. Login status is unknown."
+                    ),
+                    Err(e) => println!("Warning: Failed to verify login status: {}", e),
+                }
+                if cli.verbose {
+                    match chrome_profile_path() {
+                        Ok(profile_path) => print_chrome_diagnostics(&profile_path),
+                        Err(e) => eprintln!("Warning: Failed to locate Chrome profile: {}", e),
+                    }
                 }
                 return Ok(());
             }
@@ -3942,7 +4361,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify login
     match check_login_status(&config_path, provider) {
-        Ok(false) => {
+        Ok(LoginState::LoggedOut) => {
             eprintln!(
                 "\nError: You are not logged in to {}.",
                 provider.display_name()
@@ -3953,13 +4372,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             std::process::exit(1);
         }
+        Ok(LoginState::Unknown) => {
+            eprintln!(
+                "Warning: Could not confirm the {} account menu. Attempting to proceed...",
+                provider.display_name()
+            );
+        }
+        Ok(LoginState::LoggedIn) => {}
         Err(e) if cli.verbose => {
             eprintln!(
                 "Warning: Failed to verify login status: {}. Attempting to proceed...",
                 e
             );
         }
-        _ => {}
+        Err(_) => {}
     }
 
     // Switch model if requested (before uploading attachments / typing the prompt)
