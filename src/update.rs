@@ -143,6 +143,6 @@ fn is_process_running(pid: u32) -> bool {
         return false;
     }
 
-    let text = String::from_utf8_lossy(&output.stdout).trim();
-    text == pid_text
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.trim() == pid_text
 }
