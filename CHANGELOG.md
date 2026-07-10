@@ -10,6 +10,7 @@
 
 ### 🚀 新增 (Added)
 - 新增 `ask-bridge` 問答命令的等待逾時參數（`--timeout`），可自訂回應等待秒數。
+- 調整預設回應等待逾時為 `300` 秒（`--timeout` 預設值），降低長時間等待中斷機率。
 - `ask-bridge login` 新增登入頁面背景輪詢完成檢測，減少手動切換視窗等待時間。
 - Windows 安裝腳本新增本地建構安裝模式（`install.ps1 -Local`），可直接安裝 `target\\release\\ask-bridge.exe`，並保留 `ask.exe` alias 安裝。
 
