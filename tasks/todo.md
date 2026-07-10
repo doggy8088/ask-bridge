@@ -1,3 +1,52 @@
+# 2026-07-10 修正 Windows quiet MCP 與程式碼區塊回覆解析
+
+## Goal + Acceptance Criteria
+- [x] Node.js v24.18 環境下，非 `--verbose` 查詢不再因 Windows quiet wrapper 於 MCP `initialize` 階段退出。
+- [x] Windows 與 Unix 的 quiet／verbose 模式共用直接 `npx.cmd`／`npx` stdio transport，不再使用 shell redirection。
+- [x] quiet 僅以 flags/env 降低上游噪音，並由作用域 guard 抑制 `mcp-cli` stderr forwarding；初始化失敗仍保留 child stderr 診斷。
+- [x] 回覆包含 Markdown 程式碼區塊時，終端仍能取得完整內容，不再誤判內層三反引號為 JSON fence 結尾。
+- [x] JSON parser 驗證 outer closing fence，且 malformed fence／response shape 的錯誤不洩漏原始 payload。
+- [x] 回歸測試涵蓋跨平台 direct config、quiet／verbose transport、內嵌 `rust` code fence 與 malformed payload。
+- [x] 通過格式、目標測試、完整測試與 `cargo check` 驗證。
+
+## Risk & Rollback
+- Risk level: low
+- Affected components: 跨平台非 verbose MCP 啟動與 stderr 呈現、所有 provider 的 evaluate_script JSON 結果解析。
+- Rollback strategy: revert `Cargo.toml`／`Cargo.lock` 的 `gag` dependency，以及 `src/main.rs` 的 direct MCP config、stderr guard 與 JSON parser 變更；不涉及資料、設定格式或 migration。
+- Monitoring signals: quiet query 不得出現 MCP initialize EOF 或重複 banner；含 code fence 的回答必須完整輸出；解析錯誤不得包含原始回答內容。
+
+## Dependencies & Environment
+- 使用者環境：Windows、Node.js v24.18.0、npx 11.16.0、Google Chrome remote debugging port 9223。
+- `mcp-cli` 以 config command 直接建立 stdio child；stderr 由 library pipe 與保留診斷，不能先由 shell 丟棄。
+- 新增 `gag 1.0.0`，僅在 MCP call 作用域內抑制 quiet 模式的 process stderr forwarding；guard 建立失敗會安全中止並回報可行動錯誤。
+- Cargo target 輸出使用 `%TEMP%\ask-bridge-target`，避免 workspace 磁碟空間限制。
+
+## Working Notes
+- verbose 成功而 quiet 在 `initialize` EOF，差異集中於 Windows quiet 的 `cmd.exe /c ... 2>nul`；Node 24.18 已通過 runtime engines 檢查。
+- `No stderr output available` 是 `2>nul` 造成的診斷盲點；schema suggestion 是 `mcp-cli` 的通用 fallback。
+- `parse_script_result` 原先取 ` ```json ` 後第一個 ` ``` `，會在回答的 ` ```rust ` 處截斷 JSON 字串，與 column 206 EOF 完全吻合。
+- 改由 `serde_json::StreamDeserializer` 解析第一個完整 JSON value，再驗證獨立 closing fence；內層 code fence 不再碰撞，尾端污染仍安全失敗。
+- 保留既有 generated-image fallback；「文字擷取失敗且沒有圖片時應否回傳非零」未在本次擴張，列為後續錯誤語意改善。
+
+## Checklist
+- [x] Review `tasks/lessons.md`
+- [x] Locate quiet/verbose MCP startup and response parsing paths
+- [x] Design minimal direct-transport and parser fix
+- [x] Implement smallest safe slice
+- [x] Add regression tests
+- [x] Run format, targeted tests, full tests, and `cargo check`
+- [x] Review correctness, security/privacy, cross-platform behavior, and test coverage
+- [x] Summarize changes + verification story
+
+## Results
+- `src/main.rs`：quiet／verbose 皆使用 direct MCP executable 與結構化 args；quiet call 以作用域 guard 隱藏上游 banner，同時保留 `mcp-cli` 收集的 child stderr。
+- `src/main.rs`：evaluate_script 結果改以 JSON value 邊界解析並驗證 closing fence；錯誤不再輸出完整 MCP payload。
+- `Cargo.toml`／`Cargo.lock`：新增跨平台 stderr guard dependency `gag 1.0.0`。
+- 驗證通過：`cargo fmt --all -- --check`、4 個目標回歸測試、`cargo test`（58 passed）、`cargo check`。
+- 未操作現有登入中的 Chrome 執行外部 ChatGPT 真機 query；受影響環境仍應確認 quiet／verbose 含程式碼區塊查詢各一次。
+
+---
+
 # 2026-07-10 修正 Windows MCP Node 版本錯誤診斷
 
 ## Goal + Acceptance Criteria

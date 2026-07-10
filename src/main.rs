@@ -731,78 +731,31 @@ fn check_node_runtime() -> Result<(), String> {
     validate_node_version_output(&String::from_utf8_lossy(&output.stdout))
 }
 
-fn write_mcp_config(quiet_mcp: bool, headless: bool) -> Result<String, String> {
-    let mut config_dir = home::home_dir().ok_or("Could not locate home directory")?;
-    config_dir.push(".config/ask-bridge");
-    std::fs::create_dir_all(&config_dir)
-        .map_err(|e| format!("Failed to create config directory: {}", e))?;
+fn build_chrome_devtools_server_config(
+    quiet_mcp: bool,
+    headless: bool,
+    log_path: &str,
+    is_windows: bool,
+) -> Value {
+    let mut mcp_args = vec![
+        "-y".to_string(),
+        "chrome-devtools-mcp@latest".to_string(),
+        "--browser-url=http://127.0.0.1:9223".to_string(),
+    ];
+    if quiet_mcp {
+        mcp_args.push("--no-usage-statistics".to_string());
+        mcp_args.push("--no-performance-crux".to_string());
+    }
+    if headless {
+        mcp_args.push("--headless".to_string());
+    }
+    mcp_args.push("--logFile".to_string());
+    mcp_args.push(log_path.to_string());
 
-    let log_path = config_dir
-        .join("chrome-devtools-mcp.log")
-        .to_string_lossy()
-        .to_string();
-
-    config_dir.push("mcp_servers.json");
-    let config_path = config_dir.to_string_lossy().to_string();
-
-    let mut chrome_devtools_server = if quiet_mcp && !cfg!(target_os = "windows") {
-        // Unix: wrap with sh so we can redirect stderr to /dev/null
-        let mut sh_cmd = format!(
-            "exec npx -y chrome-devtools-mcp@latest --browser-url=http://127.0.0.1:9223 --no-usage-statistics --no-performance-crux --logFile \"{}\"",
-            log_path
-        );
-        if headless {
-            sh_cmd.push_str(" --headless");
-        }
-        sh_cmd.push_str(" 2>/dev/null");
-
-        serde_json::json!({
-            "command": "sh",
-            "args": [
-                "-c",
-                sh_cmd
-            ]
-        })
-    } else if quiet_mcp && cfg!(target_os = "windows") {
-        // Windows: wrap with cmd.exe so we can redirect stderr to nul
-        let mut cmd_args = vec![
-            "-y".to_string(),
-            "chrome-devtools-mcp@latest".to_string(),
-            "--browser-url=http://127.0.0.1:9223".to_string(),
-            "--no-usage-statistics".to_string(),
-            "--no-performance-crux".to_string(),
-            "--logFile".to_string(),
-            format!("\"{}\"", log_path),
-        ];
-        if headless {
-            cmd_args.push("--headless".to_string());
-        }
-        let cmd_str = format!("npx {} 2>nul", cmd_args.join(" "));
-
-        serde_json::json!({
-            "command": "cmd.exe",
-            "args": [
-                "/c",
-                cmd_str
-            ]
-        })
-    } else {
-        let mut mcp_args = vec![
-            "-y".to_string(),
-            "chrome-devtools-mcp@latest".to_string(),
-            "--browser-url=http://127.0.0.1:9223".to_string(),
-        ];
-        if headless {
-            mcp_args.push("--headless".to_string());
-        }
-        mcp_args.push("--logFile".to_string());
-        mcp_args.push(log_path);
-
-        serde_json::json!({
-            "command": if cfg!(target_os = "windows") { "npx.cmd" } else { "npx" },
-            "args": mcp_args
-        })
-    };
+    let mut chrome_devtools_server = serde_json::json!({
+        "command": if is_windows { "npx.cmd" } else { "npx" },
+        "args": mcp_args
+    });
 
     if quiet_mcp {
         chrome_devtools_server["env"] = serde_json::json!({
@@ -817,6 +770,30 @@ fn write_mcp_config(quiet_mcp: bool, headless: bool) -> Result<String, String> {
             "NODE_NO_WARNINGS": "1"
         });
     }
+
+    chrome_devtools_server
+}
+
+fn write_mcp_config(quiet_mcp: bool, headless: bool) -> Result<String, String> {
+    let mut config_dir = home::home_dir().ok_or("Could not locate home directory")?;
+    config_dir.push(".config/ask-bridge");
+    std::fs::create_dir_all(&config_dir)
+        .map_err(|e| format!("Failed to create config directory: {}", e))?;
+
+    let log_path = config_dir
+        .join("chrome-devtools-mcp.log")
+        .to_string_lossy()
+        .to_string();
+
+    config_dir.push("mcp_servers.json");
+    let config_path = config_dir.to_string_lossy().to_string();
+
+    let chrome_devtools_server = build_chrome_devtools_server_config(
+        quiet_mcp,
+        headless,
+        &log_path,
+        cfg!(target_os = "windows"),
+    );
 
     let config_content = serde_json::json!({
         "mcpServers": {
@@ -1689,6 +1666,8 @@ fn close_ask_chrome_on_debug_port(profile_path: &str) -> Result<bool, String> {
     Err("Timed out waiting for existing ask-bridge Chrome to stop".to_string())
 }
 
+static FORWARD_MCP_STDERR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
 fn call_mcp_tool(config_path: &str, tool: &str, args: Value) -> Result<Value, String> {
     let client = McpClient::load(Some(config_path))
         .map_err(|e| format!("Failed to load MCP config: {}", e))?;
@@ -1696,6 +1675,14 @@ fn call_mcp_tool(config_path: &str, tool: &str, args: Value) -> Result<Value, St
         .enable_all()
         .build()
         .map_err(|e| format!("Failed to create async runtime for MCP call: {}", e))?;
+    let _stderr_guard = if FORWARD_MCP_STDERR.load(std::sync::atomic::Ordering::Relaxed) {
+        None
+    } else {
+        Some(
+            gag::Gag::stderr()
+                .map_err(|e| format!("Failed to suppress MCP stderr in quiet mode: {}", e))?,
+        )
+    };
 
     runtime
         .block_on(async { client.call_tool("chrome-devtools", tool, args).await })
@@ -1734,30 +1721,29 @@ fn parse_script_result(val: &Value) -> Result<Value, String> {
         .and_then(|arr| arr.first())
         .and_then(|obj| obj.get("text"))
         .and_then(|t| t.as_str())
-        .ok_or_else(|| {
-            format!(
-                "Could not extract text field from evaluate_script result: {:?}",
-                val
-            )
-        })?;
+        .ok_or_else(|| "Could not extract text field from evaluate_script result".to_string())?;
 
     let start_tag = "```json";
-    let end_tag = "```";
 
     if let Some(start_pos) = text.find(start_tag) {
         let json_start = start_pos + start_tag.len();
-        if let Some(end_pos) = text[json_start..].find(end_tag) {
-            let json_str = text[json_start..json_start + end_pos].trim();
-            let parsed: Value = serde_json::from_str(json_str)
-                .map_err(|e| format!("JSON parsing error: {}\nJSON content: {}", e, json_str))?;
-            return Ok(parsed);
+        let json_str = text[json_start..].trim_start();
+        let mut values = serde_json::Deserializer::from_str(json_str).into_iter::<Value>();
+        let parsed = values
+            .next()
+            .ok_or_else(|| "JSON parsing error: missing JSON value".to_string())?
+            .map_err(|e| format!("JSON parsing error: {}", e))?;
+        let remainder = json_str[values.byte_offset()..].trim_start();
+        let after_fence = remainder
+            .strip_prefix("```")
+            .ok_or_else(|| "Could not find closing JSON fence in script result".to_string())?;
+        if !matches!(after_fence.chars().next(), None | Some('\r') | Some('\n')) {
+            return Err("Invalid closing JSON fence in script result".to_string());
         }
+        return Ok(parsed);
     }
 
-    Err(format!(
-        "Could not find JSON fencing in script result:\n{}",
-        text
-    ))
+    Err("Could not find JSON fencing in script result".to_string())
 }
 
 fn tool_text(val: &Value) -> Result<String, String> {
@@ -1909,6 +1895,96 @@ mod tests {
                 "expected {output:?} to be rejected"
             );
         }
+    }
+
+    #[test]
+    fn builds_direct_quiet_mcp_configs() {
+        fn config_args(config: &serde_json::Value) -> Vec<&str> {
+            config["args"]
+                .as_array()
+                .expect("MCP config should contain an args array")
+                .iter()
+                .map(|arg| arg.as_str().expect("MCP arguments should be strings"))
+                .collect()
+        }
+
+        let log_path = r"C:\Temp\ask bridge\chrome-devtools-mcp.log";
+        let quiet_windows = build_chrome_devtools_server_config(true, true, log_path, true);
+        let verbose_windows = build_chrome_devtools_server_config(false, true, log_path, true);
+        let quiet_unix = build_chrome_devtools_server_config(true, true, log_path, false);
+        let quiet_args = config_args(&quiet_windows);
+        let verbose_args = config_args(&verbose_windows);
+
+        assert_eq!(quiet_windows["command"].as_str(), Some("npx.cmd"));
+        assert_eq!(verbose_windows["command"].as_str(), Some("npx.cmd"));
+        assert_eq!(quiet_unix["command"].as_str(), Some("npx"));
+        for required in [
+            "chrome-devtools-mcp@latest",
+            "--browser-url=http://127.0.0.1:9223",
+            "--headless",
+            "--logFile",
+            log_path,
+        ] {
+            assert!(quiet_args.contains(&required));
+            assert!(verbose_args.contains(&required));
+        }
+        assert!(quiet_args.contains(&"--no-usage-statistics"));
+        assert!(quiet_args.contains(&"--no-performance-crux"));
+        assert!(!verbose_args.contains(&"--no-usage-statistics"));
+        assert!(!verbose_args.contains(&"--no-performance-crux"));
+        assert!(!quiet_args.iter().any(|arg| arg.contains("2>nul")));
+        assert_eq!(quiet_windows["env"]["CI"].as_str(), Some("1"));
+        assert!(verbose_windows.get("env").is_none());
+    }
+
+    #[test]
+    fn parses_script_result_containing_markdown_code_fence() {
+        let markdown = "說明\n```rust\nfn main() { println!(\"ok\"); }\n```\n結尾";
+        let encoded = serde_json::to_string(markdown).expect("markdown should serialize");
+        let result = serde_json::json!({
+            "content": [{
+                "type": "text",
+                "text": format!("Script ran on page and returned:\n```json\n{}\n```", encoded)
+            }]
+        });
+
+        assert_eq!(
+            parse_script_result(&result).expect("script result should parse"),
+            serde_json::Value::String(markdown.to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_script_fence_without_leaking_payload() {
+        let secret = "private-response-content";
+        let encoded = serde_json::to_string(secret).expect("secret should serialize");
+
+        for text in [
+            format!("Script ran on page and returned:\n```json\n{}", encoded),
+            format!(
+                "Script ran on page and returned:\n```json\n{} trailing-data\n```",
+                encoded
+            ),
+        ] {
+            let result = serde_json::json!({
+                "content": [{ "type": "text", "text": text }]
+            });
+            let error = parse_script_result(&result).expect_err("malformed fence should fail");
+
+            assert!(!error.contains(secret));
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_script_shape_without_leaking_payload() {
+        let secret = "private-response-content";
+        let result = serde_json::json!({
+            "content": [{ "type": "text", "unexpected": secret }]
+        });
+        let error = parse_script_result(&result).expect_err("malformed shape should fail");
+
+        assert!(!error.contains(secret));
+        assert!(error.contains("Could not extract text field"));
     }
 
     fn make_test_dir(name: &str) -> std::path::PathBuf {
@@ -4893,6 +4969,7 @@ fn print_chrome_diagnostics(profile_path: &str) {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    FORWARD_MCP_STDERR.store(cli.verbose, std::sync::atomic::Ordering::Relaxed);
 
     if matches!(cli.command, Some(Commands::Config)) {
         if let Err(e) = run_config_command(cli.provider) {

@@ -1,5 +1,16 @@
 # Lessons Learned
 
+## 2026-07-10 Windows quiet MCP 與 JSON fence 碰撞
+
+- Mistake class: incorrect assumption about repository/runtime behavior、missing verification。
+- Failure mode: 為隱藏 MCP stderr 而把 Windows stdio server 包進 `cmd.exe /c ... 2>nul`，同時失去可靠的 transport 與失敗診斷；另以第一個三反引號尋找 evaluate_script JSON fence 結尾，遇到回答內的 Markdown code fence 便截斷合法 JSON 字串。
+- Detection signal: 同一環境下 quiet 在 `initialize` 回報 server EOF 且沒有 stderr，verbose 直接 `npx.cmd` 則成功；回覆在第一個 ` ```rust ` 前報 `EOF while parsing a string`，瀏覽器已有完整回答但終端只剩 Thread Link。
+- Prevention rule: verbosity 不得改變 MCP transport，只能控制 flags/env/呈現；quiet 應在 forwarding 呈現層抑制 stderr，不能在 child transport 前丟棄診斷。結構化資料必須交給 JSON parser 判定值邊界，再獨立驗證 wrapper fence，不得用第一個 Markdown delimiter 截斷內嵌 JSON。
+- Tripwires:
+  - 單元測試固定斷言 Windows／Unix quiet 與 verbose 使用相同 direct executable transport、不含 shell redirection，且僅 quiet 保留降噪 flags/env。
+  - 單元測試固定涵蓋 evaluate_script JSON 字串內含多行 Markdown、程式語言 code fence、雙引號、缺少 closing fence、尾端污染與 malformed response shape。
+  - Parser／MCP shape 錯誤不得包含原始 payload；Windows release 前以非 verbose 與 verbose 各執行一次含程式碼區塊的 query，並確認 quiet 不漏 banner、失敗仍有 child stderr 診斷。
+
 ## 2026-07-10 Windows Chrome ownership 與登入判斷回歸
 
 - Mistake class: incorrect assumption about repository/runtime behavior、missing verification。
