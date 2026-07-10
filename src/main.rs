@@ -51,6 +51,8 @@ enum Provider {
     ChatGpt,
     #[value(name = "gemini")]
     Gemini,
+    #[value(name = "claude")]
+    Claude,
 }
 
 impl Provider {
@@ -58,6 +60,7 @@ impl Provider {
         match value.trim().to_ascii_lowercase().as_str() {
             "chatgpt" | "chat-gpt" | "chat_gpt" => Some(Provider::ChatGpt),
             "gemini" => Some(Provider::Gemini),
+            "claude" | "claude-ai" | "claude_ai" | "claudeai" => Some(Provider::Claude),
             _ => None,
         }
     }
@@ -66,6 +69,7 @@ impl Provider {
         match self {
             Provider::ChatGpt => "ChatGPT",
             Provider::Gemini => "Gemini",
+            Provider::Claude => "Claude",
         }
     }
 
@@ -73,6 +77,7 @@ impl Provider {
         match self {
             Provider::ChatGpt => "https://chatgpt.com/",
             Provider::Gemini => "https://gemini.google.com/app",
+            Provider::Claude => "https://claude.ai/new",
         }
     }
 
@@ -80,11 +85,12 @@ impl Provider {
         match self {
             Provider::ChatGpt => url.contains("chatgpt.com"),
             Provider::Gemini => url.contains("gemini.google.com"),
+            Provider::Claude => url.contains("claude.ai"),
         }
     }
 
     fn from_url(url: &str) -> Option<Self> {
-        [Provider::ChatGpt, Provider::Gemini]
+        [Provider::ChatGpt, Provider::Gemini, Provider::Claude]
             .into_iter()
             .find(|provider| provider.owns_url(url))
     }
@@ -98,6 +104,15 @@ impl Provider {
                            document.querySelector('rich-textarea [contenteditable="true"]') !== null ||
                            document.querySelector('.ql-editor[contenteditable="true"]') !== null ||
                            document.querySelector('a[href*="accounts.google.com"]') !== null ||
+                           /Sign in|登入/.test(document.body.innerText || '');
+                }"#
+            }
+            Provider::Claude => {
+                r#"() => {
+                    return document.querySelector('div[contenteditable="true"][data-testid="chat-input"]') !== null ||
+                           document.querySelector('div[contenteditable="true"].ProseMirror') !== null ||
+                           document.querySelector('[data-testid="login-with-google"]') !== null ||
+                           window.location.pathname.startsWith('/login') ||
                            /Sign in|登入/.test(document.body.innerText || '');
                 }"#
             }
@@ -191,6 +206,38 @@ impl Provider {
                     };
                 }"#
             }
+            Provider::Claude => {
+                r#"() => {
+                    const isVisible = (el) => {
+                        if (!el) return false;
+                        const style = window.getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        return style.display !== 'none' &&
+                            style.visibility !== 'hidden' &&
+                            style.opacity !== '0' &&
+                            rect.width > 0 &&
+                            rect.height > 0;
+                    };
+                    const composer = document.querySelector('div[contenteditable="true"][data-testid="chat-input"]') ||
+                        document.querySelector('div[contenteditable="true"].ProseMirror');
+                    const account = document.querySelector('[data-testid="user-menu-button"]') ||
+                        document.querySelector('button[aria-label*="User menu"]') ||
+                        document.querySelector('button[aria-label*="Account"]');
+                    const signIn = document.querySelector('[data-testid="login-with-google"]') ||
+                        Array.from(document.querySelectorAll('a, button'))
+                            .find((el) => isVisible(el) && /^(log in|login|sign in|sign up|登入|註冊)$/i.test([
+                                    el.getAttribute('aria-label'),
+                                    el.textContent
+                                ].filter(Boolean).join(' ').trim()));
+                    const authPath = /^\/(login|signup|magic-link)(\/|$)/i.test(window.location.pathname);
+                    return {
+                        account: isVisible(account),
+                        auth_control: Boolean(signIn),
+                        auth_path: authPath,
+                        composer: Boolean(composer)
+                    };
+                }"#
+            }
         }
     }
 
@@ -198,6 +245,7 @@ impl Provider {
         match self {
             Provider::ChatGpt => "[data-message-author-role=\"assistant\"], .agent-turn",
             Provider::Gemini => "model-response",
+            Provider::Claude => ".font-claude-response",
         }
     }
 
@@ -207,6 +255,7 @@ impl Provider {
                 "[data-message-author-role=\"assistant\"], .agent-turn, model-response, .model-response, [data-test-id*=\"response\"], [data-testid*=\"response\"]"
             }
             Provider::Gemini => "model-response",
+            Provider::Claude => ".font-claude-response",
         }
     }
 
@@ -216,6 +265,7 @@ impl Provider {
             Provider::Gemini => {
                 "message-content, .markdown, structured-content-container.model-response-text"
             }
+            Provider::Claude => ".standard-markdown, .font-claude-response-body",
         }
     }
 
@@ -227,6 +277,13 @@ impl Provider {
                     "div[role=\"textbox\"][aria-label*=\"Gemini\"]",
                     "rich-textarea [contenteditable=\"true\"]",
                     ".ql-editor[contenteditable=\"true\"]"
+                ]"#
+            }
+            Provider::Claude => {
+                r#"[
+                    "div[contenteditable=\"true\"][data-testid=\"chat-input\"]",
+                    "div[contenteditable=\"true\"].ProseMirror",
+                    "div[aria-label*=\"Claude\"][contenteditable=\"true\"]"
                 ]"#
             }
         }
@@ -252,6 +309,13 @@ impl Provider {
                     "button[aria-label*=\"提交\"]"
                 ]"#
             }
+            Provider::Claude => {
+                r#"[
+                    "button[aria-label=\"Send message\"]",
+                    "button[aria-label*=\"Send\"]",
+                    "button[aria-label*=\"傳送\"]"
+                ]"#
+            }
         }
     }
 
@@ -271,6 +335,13 @@ impl Provider {
                     "button[aria-label*=\"停止\"]"
                 ]"#
             }
+            Provider::Claude => {
+                r#"[
+                    "button[aria-label=\"Stop response\"]",
+                    "button[aria-label*=\"Stop\"]",
+                    "button[aria-label*=\"停止\"]"
+                ]"#
+            }
         }
     }
 }
@@ -280,6 +351,7 @@ impl fmt::Display for Provider {
         match self {
             Provider::ChatGpt => write!(f, "chatgpt"),
             Provider::Gemini => write!(f, "gemini"),
+            Provider::Claude => write!(f, "claude"),
         }
     }
 }
@@ -324,7 +396,7 @@ fn parse_chatgpt_agent_prompt(prompt: &str) -> Option<ChatGptAgentPrompt<'_>> {
 #[command(name = "ask-bridge")]
 #[command(version = "0.2.1")]
 #[command(disable_version_flag = true)]
-#[command(about = "AI browser CLI - Ask ChatGPT or Gemini from your Terminal with your subscription", long_about = None)]
+#[command(about = "AI browser CLI - Ask ChatGPT, Gemini or Claude from your Terminal with your subscription", long_about = None)]
 struct Cli {
     /// The prompt to send to the selected provider.
     /// If standard input is piped and this value is present, they are combined as:
@@ -376,7 +448,8 @@ struct Cli {
     /// Switch the provider model before sending the prompt.
     /// ChatGPT examples: "GPT-5.5", "GPT-5.4", "GPT-5.3", "o3", or thinking levels such as
     /// "即時", "中等", "高", "超高", "專業", "智慧". Gemini examples: "3.5 Flash",
-    /// "3.1 Flash-Lite", or "3.1 Pro". Matching is case- and punctuation-insensitive.
+    /// "3.1 Flash-Lite", or "3.1 Pro". Claude examples: "Sonnet", "Opus", "Haiku".
+    /// Matching is case- and punctuation-insensitive.
     #[arg(long = "model", value_name = "MODEL")]
     model: Option<String>,
 
@@ -540,7 +613,9 @@ fn run_config_command(cli_provider: Option<Provider>) -> Result<(), String> {
                     config_path.to_string_lossy()
                 );
             }
-            println!("Set default provider with: ask-bridge config --provider <chatgpt|gemini>");
+            println!(
+                "Set default provider with: ask-bridge config --provider <chatgpt|gemini|claude>"
+            );
             println!("This is a one-time override example: ask-bridge --provider gemini <prompt>");
             Ok(())
         }
@@ -1480,6 +1555,14 @@ mod tests {
             parse_configured_provider(r#"{"provider":"chat-gpt"}"#).unwrap(),
             Some(Provider::ChatGpt)
         );
+        assert_eq!(
+            parse_configured_provider(r#"{"provider":"claude"}"#).unwrap(),
+            Some(Provider::Claude)
+        );
+        assert_eq!(
+            parse_configured_provider(r#"{"provider":"claude-ai"}"#).unwrap(),
+            Some(Provider::Claude)
+        );
         assert_eq!(parse_configured_provider(r#"{}"#).unwrap(), None);
     }
 
@@ -1514,7 +1597,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_provider_in_config_json() {
-        let err = parse_configured_provider(r#"{"provider":"claude"}"#).unwrap_err();
+        let err = parse_configured_provider(r#"{"provider":"copilot"}"#).unwrap_err();
         assert!(err.contains("Invalid provider"));
     }
 
@@ -1554,7 +1637,13 @@ mod tests {
 
     #[test]
     fn rejects_unknown_provider() {
-        assert!(Cli::try_parse_from(["ask-bridge", "--provider", "claude", "hello"]).is_err());
+        assert!(Cli::try_parse_from(["ask-bridge", "--provider", "copilot", "hello"]).is_err());
+    }
+
+    #[test]
+    fn parses_claude_provider_argument() {
+        let cli = Cli::try_parse_from(["ask-bridge", "--provider", "claude", "hello"]).unwrap();
+        assert_eq!(cli.provider, Some(Provider::Claude));
     }
 
     #[test]
@@ -1566,6 +1655,10 @@ mod tests {
         assert_eq!(
             Provider::from_url("https://gemini.google.com/app/abc"),
             Some(Provider::Gemini)
+        );
+        assert_eq!(
+            Provider::from_url("https://claude.ai/chat/abc"),
+            Some(Provider::Claude)
         );
         assert_eq!(Provider::from_url("https://example.com"), None);
     }
@@ -1650,6 +1743,22 @@ mod tests {
         ])
         .unwrap();
         assert!(validate_provider_feature_support(Provider::Gemini, &cli).is_err());
+    }
+
+    #[test]
+    fn allows_claude_image_and_file_attachments() {
+        let cli = Cli::try_parse_from([
+            "ask-bridge",
+            "--provider",
+            "claude",
+            "--image",
+            "token.png",
+            "--file",
+            "token.txt",
+            "read",
+        ])
+        .unwrap();
+        assert!(validate_provider_feature_support(Provider::Claude, &cli).is_ok());
     }
 
     #[test]
@@ -1941,7 +2050,7 @@ fn click_latest_copy_button(config_path: &str, provider: Provider) -> Result<(),
                     if (el.closest('pre, code, [class*="code"], [data-testid*="code"]')) return -1;
                     if (/copy-turn-action-button/i.test(label)) return 100;
                     if (/response|回應|回答|reply/i.test(label)) return 90;
-                    if (el.closest('model-response, response-container, [data-message-author-role="assistant"], .agent-turn')) return 50;
+                    if (el.closest('model-response, response-container, [data-message-author-role="assistant"], .agent-turn, [data-is-streaming], .font-claude-response')) return 50;
                     return 10;
                 };
                 const messages = Array.from(document.querySelectorAll(__RESPONSE_SELECTOR__));
@@ -2701,6 +2810,8 @@ fn upload_attachments_via_file_chooser(
                     .or_else(|| find_snapshot_uid(&snapshot, &["upload"], &["drive"]))
             }
             Provider::ChatGpt => find_snapshot_uid(&snapshot, &["attach"], &["settings", "menu"]),
+            Provider::Claude => find_snapshot_uid(&snapshot, &["attach"], &["settings", "menu"])
+                .or_else(|| find_snapshot_uid(&snapshot, &["upload"], &["drive"])),
         }
         .ok_or_else(|| {
             format!(
@@ -2724,6 +2835,10 @@ fn upload_attachments_via_file_chooser(
             Provider::Gemini => find_snapshot_uid(&snapshot, &["上傳檔案"], &["雲端", "drive"])
                 .or_else(|| find_snapshot_uid(&snapshot, &["upload", "file"], &["drive"])),
             Provider::ChatGpt => find_snapshot_uid(&snapshot, &["file"], &["drive", "connect"]),
+            Provider::Claude => {
+                find_snapshot_uid(&snapshot, &["upload", "file"], &["drive", "connect"])
+                    .or_else(|| find_snapshot_uid(&snapshot, &["file"], &["drive", "connect"]))
+            }
         }
         .unwrap_or_else(|| menu_uid.clone());
 
@@ -3190,6 +3305,68 @@ fn switch_model(
                         chosen.click();
                         await sleep(500);
                         window.__switch_model_status = 'success:' + (chosen.innerText || chosen.textContent || '').trim();
+                    } catch (e) {
+                        window.__switch_model_status = 'error: ' + e.message;
+                    }
+                })();
+                return true;
+            }"#;
+            template.replace("__TARGET_MODEL__", &target_json)
+        }
+        Provider::Claude => {
+            let template = r#"() => {
+                window.__switch_model_status = 'pending';
+                (async () => {
+                    try {
+                        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+                        const norm = (s) => (s || '').toLowerCase().replace(/[\s.\-_]/g, '');
+                        const labelOf = (el) => ((el.innerText || el.textContent || '').split('\n')[0] || '').trim();
+                        const target = norm(__TARGET_MODEL__);
+                        if (!target) { window.__switch_model_status = 'error: empty target'; return; }
+                        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+                        await sleep(300);
+                        let trigger = document.querySelector('[data-testid="model-selector-dropdown"]');
+                        if (!trigger) {
+                            trigger = Array.from(document.querySelectorAll('button')).find((button) => {
+                                const popup = button.getAttribute('aria-haspopup');
+                                if (popup !== 'menu' && popup !== 'listbox') return false;
+                                const label = [button.getAttribute('aria-label'), button.textContent].filter(Boolean).join(' ');
+                                return /model|claude|opus|sonnet|haiku|fable/i.test(label);
+                            });
+                        }
+                        if (!trigger) { window.__switch_model_status = 'error: Claude model selector not found'; return; }
+                        trigger.click();
+                        await sleep(800);
+                        const visited = new Set();
+                        let clicked = false;
+                        let chosen = '';
+                        for (let depth = 0; depth < 4 && !clicked; depth++) {
+                            const items = Array.from(document.querySelectorAll('[role="menuitem"], [role="option"], [role="menuitemradio"]'));
+                            const leaves = items.filter((it) => it.getAttribute('aria-haspopup') !== 'menu');
+                            let match = leaves.find((it) => norm(labelOf(it)) === target);
+                            if (!match) match = leaves.find((it) => norm(labelOf(it)).startsWith(target));
+                            if (match) {
+                                match.click();
+                                clicked = true;
+                                chosen = labelOf(match);
+                                break;
+                            }
+                            const trigs = items.filter((it) => it.getAttribute('aria-haspopup') === 'menu');
+                            const trig = trigs.find((it) => !visited.has(norm(it.innerText)));
+                            if (!trig) break;
+                            visited.add(norm(trig.innerText));
+                            trig.dispatchEvent(new MouseEvent('pointerenter', { bubbles: true }));
+                            trig.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+                            trig.click();
+                            await sleep(700);
+                        }
+                        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+                        if (!clicked) {
+                            window.__switch_model_status = 'error: model not found in menu';
+                            return;
+                        }
+                        await sleep(400);
+                        window.__switch_model_status = 'success:' + chosen;
                     } catch (e) {
                         window.__switch_model_status = 'error: ' + e.message;
                     }

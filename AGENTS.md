@@ -6,7 +6,7 @@
 
 ## 📌 專案概述
 
-`ask-bridge` 是一個基於 Rust 語言編寫的命令列工具，旨在透過 **Google Chrome** 的遠端除錯協定（Remote Debugging Protocol）來自動化操控網頁版的 **ChatGPT** 與 **Gemini**，並透過 MCP (Model Context Protocol) 與外部進行對接與問答。
+`ask-bridge` 是一個基於 Rust 語言編寫的命令列工具，旨在透過 **Google Chrome** 的遠端除錯協定（Remote Debugging Protocol）來自動化操控網頁版的 **ChatGPT**、**Gemini** 與 **Claude**，並透過 MCP (Model Context Protocol) 與外部進行對接與問答。
 
 ### ⚙️ 核心工作原理
 1. **Chrome 遠端除錯**：啟動一個監聽於連接埠 `9223` 的 Chrome 實例（提供專屬的 user-data-dir 設定檔目錄）。

@@ -1,6 +1,6 @@
 # 快速開始
 
-本文件說明如何安裝 `ask-bridge`，並透過 Chrome 自動操作 ChatGPT 或 Gemini。未設定全域 provider 時預設為 ChatGPT，可用 `--provider gemini` 或全域設定檔切換。
+本文件說明如何安裝 `ask-bridge`，並透過 Chrome 自動操作 ChatGPT、Gemini 或 Claude。未設定全域 provider 時預設為 ChatGPT，可用 `--provider gemini`、`--provider claude` 或全域設定檔切換。
 
 ## 前置需求
 
@@ -51,12 +51,21 @@ ask-bridge --provider gemini login
 
 在瀏覽器視窗登入 Gemini 後，回到終端機按 Enter。
 
+若要登入 Claude：
+
+```sh
+ask-bridge --provider claude login
+```
+
+在瀏覽器視窗登入 claude.ai 後，回到終端機按 Enter。
+
 ## 全域 provider 設定
 
-若希望未指定 `--provider` 時預設使用 Gemini，可執行：
+若希望未指定 `--provider` 時預設使用 Gemini 或 Claude，可執行：
 
 ```sh
 ask-bridge config --provider gemini
+ask-bridge config --provider claude
 ```
 
 若要改回 ChatGPT：
@@ -76,6 +85,7 @@ ask-bridge config --provider chatgpt
 ```sh
 ask-bridge "用一段話解釋 Rust ownership。"
 ask-bridge --provider gemini "用一段話解釋 Rust ownership。"
+ask-bridge --provider claude "用一段話解釋 Rust ownership。"
 ```
 
 一般提問預設會使用 headless Chrome，並把所選 provider 的回覆輸出到終端機。
@@ -114,11 +124,11 @@ cat README.md | ask-bridge "摘要這份文件。"
 
 ## 附上圖片或文件
 
-`ask-bridge` 支援把本機檔案當作附件直接上傳給所選 provider，不必透過 pipe 把內容塞進 prompt。Gemini 目前支援 `--file` 文件附件；`--image` 圖片輸入目前僅支援 ChatGPT。
+`ask-bridge` 支援把本機檔案當作附件直接上傳給所選 provider，不必透過 pipe 把內容塞進 prompt。Gemini 目前支援 `--file` 文件附件；`--image` 圖片輸入目前支援 ChatGPT 與 Claude。
 
 ### 附上圖片
 
-使用 `--image`（可重複指定）。此功能目前僅支援 ChatGPT；搭配 `--provider gemini` 使用會立即回報錯誤。
+使用 `--image`（可重複指定）。此功能目前支援 ChatGPT 與 Claude；搭配 `--provider gemini` 使用會立即回報錯誤。
 
 ```sh
 ask-bridge "請描述這張圖片。" --image screenshot.png
@@ -150,6 +160,7 @@ ask-bridge "用幾句話介紹 Rust。" --model GPT-5.4
 ask-bridge "證明這個數學問題。" --model o3
 ask-bridge "快速翻譯這段話。" --model 即時
 ask-bridge --provider gemini "用幾句話介紹 Rust。" --model "3.5 Flash"
+ask-bridge --provider claude "用幾句話介紹 Rust。" --model Sonnet
 ```
 
 可用名稱（視帳號權限與 provider UI）：
@@ -157,6 +168,7 @@ ask-bridge --provider gemini "用幾句話介紹 Rust。" --model "3.5 Flash"
 - **ChatGPT 模型**：`GPT-5.5`、`GPT-5.4`、`GPT-5.3`、`o3`
 - **ChatGPT 思考強度**：`智慧`、`即時`、`中等`、`高`、`超高`、`專業`
 - **Gemini 模式**：`3.5 Flash`、`3.1 Flash-Lite`、`3.1 Pro`
+- **Claude 模型**：`Sonnet`、`Opus`、`Haiku`（實際名稱依 claude.ai 選單與帳號方案而定）
 
 ## 關閉瀏覽器 instance
 

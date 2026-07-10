@@ -1,21 +1,21 @@
 # Ask Bridge 🦀
 
-`ask-bridge` 是以 Rust 撰寫的輕量命令列工具，可透過真實 Chrome 瀏覽器自動操作 ChatGPT 與 Gemini。它使用 Model Context Protocol MCP 與 Chrome DevTools Protocol CDP，並透過內建的 `doggy8088/mcp-cli` Rust library dependency 搭配 `chrome-devtools-mcp` 控制 Chrome、輸入 prompt、送出訊息，並將回覆輸出到終端機。未設定全域 provider 時預設使用 ChatGPT，可用 `--provider gemini` 或全域設定檔切換到 Gemini。
+`ask-bridge` 是以 Rust 撰寫的輕量命令列工具，可透過真實 Chrome 瀏覽器自動操作 ChatGPT、Gemini 與 Claude。它使用 Model Context Protocol MCP 與 Chrome DevTools Protocol CDP，並透過內建的 `doggy8088/mcp-cli` Rust library dependency 搭配 `chrome-devtools-mcp` 控制 Chrome、輸入 prompt、送出訊息，並將回覆輸出到終端機。未設定全域 provider 時預設使用 ChatGPT，可用 `--provider gemini`、`--provider claude` 或全域設定檔切換 provider。
 
 ## 設計意圖
 
-`ask-bridge` 的核心目的不是取代 ChatGPT、Gemini 或任何 Coding Agent，而是把它們橋接在一起。開發過程中常會出現大量探索性的 AI 需求，例如查資料、整理文件、比較方案、摘要錯誤訊息、分析程式片段、產生初稿或協助釐清不確定的技術問題。這類任務通常不一定需要由主要 Coding Agent 親自完成，也不一定值得消耗與程式碼編輯、測試、重構等高價值工作相同的 agent 額度。
+`ask-bridge` 的核心目的不是取代 ChatGPT、Gemini、Claude 或任何 Coding Agent，而是把它們橋接在一起。開發過程中常會出現大量探索性的 AI 需求，例如查資料、整理文件、比較方案、摘要錯誤訊息、分析程式片段、產生初稿或協助釐清不確定的技術問題。這類任務通常不一定需要由主要 Coding Agent 親自完成，也不一定值得消耗與程式碼編輯、測試、重構等高價值工作相同的 agent 額度。
 
-透過 `ask-bridge`，Coding Agent 可以把這些低風險、探索性、可委派的研究工作轉交給 ChatGPT 或 Gemini 網站處理，再把網站回覆取回終端機或後續工作流程中。由於 ChatGPT、Gemini 網站的使用額度與 Coding Agent 的執行額度通常分開計算，`ask-bridge` 可以讓開發者更有彈性地分配 AI 資源：主要 agent 專注在理解專案、修改程式、執行測試與整合結果；網站型 AI 則負責背景研究、文字處理與候選方案產出。
+透過 `ask-bridge`，Coding Agent 可以把這些低風險、探索性、可委派的研究工作轉交給 ChatGPT、Gemini 或 Claude 網站處理，再把網站回覆取回終端機或後續工作流程中。由於 ChatGPT、Gemini、Claude 網站的使用額度與 Coding Agent 的執行額度通常分開計算，`ask-bridge` 可以讓開發者更有彈性地分配 AI 資源：主要 agent 專注在理解專案、修改程式、執行測試與整合結果；網站型 AI 則負責背景研究、文字處理與候選方案產出。
 
-換句話說，`ask-bridge` 是一個給 AI Agent 使用的外部研究橋接器：它把原本需要人類切換瀏覽器、貼上 prompt、等待回覆、再複製結果的流程，包裝成可由命令列驅動的自動化能力。這讓 agent 可以在不離開本機工作流程的情況下，自主向 ChatGPT 或 Gemini 發出請求，取得輔助資訊，並將其納入後續判斷。
+換句話說，`ask-bridge` 是一個給 AI Agent 使用的外部研究橋接器：它把原本需要人類切換瀏覽器、貼上 prompt、等待回覆、再複製結果的流程，包裝成可由命令列驅動的自動化能力。這讓 agent 可以在不離開本機工作流程的情況下，自主向 ChatGPT、Gemini 或 Claude 發出請求，取得輔助資訊，並將其納入後續判斷。
 
 此工具特別適合：
 
 - 將大型文件、錯誤訊息或程式片段交給網站型 AI 做摘要、比對或初步分析。
 - 讓 Coding Agent 在實作前先委外蒐集背景資料、整理替代方案或產生檢查清單。
 - 把不需要直接修改專案檔案的 AI 任務移出主要 agent 執行流程。
-- 利用既有 ChatGPT 或 Gemini 網頁帳號的能力，處理 API 以外的互動式網站功能。
+- 利用既有 ChatGPT、Gemini 或 Claude 網頁帳號的能力，處理 API 以外的互動式網站功能。
 
 `ask-bridge` 不保證網站 provider 的輸出一定正確，也不應取代本機測試、官方文件查證或人工審查。它的定位是降低探索性 AI 工作的操作成本，讓主要 Coding Agent 能以更低摩擦取得外部 AI 協助。
 
@@ -28,7 +28,7 @@
 ## 主要功能
 
 - **100% Rust 核心**：快速、輕量，編譯後即可執行。
-- **多 provider 支援**：使用 `--provider chatgpt|gemini` 選擇 ChatGPT 或 Gemini。
+- **多 provider 支援**：使用 `--provider chatgpt|gemini|claude` 選擇 ChatGPT、Gemini 或 Claude。
 - **全域 provider 設定**：可在 `~/.config/ask-bridge/config.json` 指定預設 provider，CLI 的 `--provider` 會覆蓋設定檔。
 - **真實瀏覽器自動化**：直接控制監聽 `9223` port 的 Chrome debug profile。
 - **持久登入狀態**：使用專屬本機 profile 目錄 `~/.config/ask-bridge/chrome-profile`，避免重複登入。
@@ -36,8 +36,8 @@
 - **思考動畫**：等待 provider 回覆時，在終端機顯示旋轉 spinner，開始輸出內容後自動清除。
 - **智慧分頁管理**：可重用既有 provider 分頁、聚焦分頁，或開啟新分頁，避免分頁過度增加。
 - **Pipe 與 stdin 支援**：支援透過 standard input 傳入 prompt，例如 `cat report.txt | ask-bridge "summarize this"`。
-- **圖片與文件上傳**：可透過 `--image` 附上 ChatGPT 圖片，或透過 `--file` 附上文件（PDF、Word、Excel、純文字、Markdown、JSON 等皆可），一次可指定多個檔案；Gemini 目前支援 `--file`，不支援 `--image` 圖片輸入。
-- **模型切換**：使用 `--model` 在送出 prompt 前自動切換 provider 模型（如 ChatGPT 的 `GPT-5.4`、`o3`，或 Gemini 的 `3.5 Flash`、`3.1 Pro`）。
+- **圖片與文件上傳**：可透過 `--image` 附上圖片（支援 ChatGPT 與 Claude），或透過 `--file` 附上文件（PDF、Word、Excel、純文字、Markdown、JSON 等皆可），一次可指定多個檔案；Gemini 目前支援 `--file`，不支援 `--image` 圖片輸入。
+- **模型切換**：使用 `--model` 在送出 prompt 前自動切換 provider 模型（如 ChatGPT 的 `GPT-5.4`、`o3`，Gemini 的 `3.5 Flash`、`3.1 Pro`，或 Claude 的 `Sonnet`、`Opus`）。
 - **預設安靜模式與 verbose 模式**：預設只輸出最終回覆；加上 `--verbose` 可顯示背景瀏覽器控制流程。
 - **版本資訊**：使用 `-v` 或 `--version` 顯示目前版本號。
 
@@ -107,7 +107,7 @@ cargo build --release
 
 ### 4. 安裝 Agent Skill
 
-本專案提供 `ask-bridge` Agent Skill，讓支援 Skills 的 Coding Agent 可以在適合的情境下，自主使用 `ask-bridge` 將探索性研究、摘要、文件分析或方案比較等工作委派給 ChatGPT 或 Gemini 網站。
+本專案提供 `ask-bridge` Agent Skill，讓支援 Skills 的 Coding Agent 可以在適合的情境下，自主使用 `ask-bridge` 將探索性研究、摘要、文件分析或方案比較等工作委派給 ChatGPT、Gemini 或 Claude 網站。
 
 請使用 `npx skills` 安裝，不需要手動複製 `skills/` 目錄：
 
@@ -131,16 +131,17 @@ npx skills add doggy8088/ask-bridge --skill ask-bridge --agent codex --global
 ask-bridge login
 ```
 
-若要登入 Gemini：
+若要登入 Gemini 或 Claude：
 
 ```bash
 ask-bridge --provider gemini login
+ask-bridge --provider claude login
 ```
 
 此命令會：
 
 - 使用專屬且持久化的 debug profile 啟動 Google Chrome。
-- 開啟所選 provider 頁面，例如 `https://chatgpt.com/` 或 `https://gemini.google.com/app`。
+- 開啟所選 provider 頁面，例如 `https://chatgpt.com/`、`https://gemini.google.com/app` 或 `https://claude.ai/new`。
 - 等待你手動登入帳號。
 - 在你回到終端機按 Enter 後，驗證登入狀態並保存 profile。
 
@@ -148,10 +149,11 @@ ask-bridge --provider gemini login
 
 #### 全域 provider 設定
 
-若希望未指定 `--provider` 時預設使用 Gemini，可用 `ask-bridge config` 指定：
+若希望未指定 `--provider` 時預設使用 Gemini 或 Claude，可用 `ask-bridge config` 指定：
 
 ```bash
 ask-bridge config --provider gemini
+ask-bridge config --provider claude
 ```
 
 若要改回 ChatGPT：
@@ -179,6 +181,7 @@ ask-bridge --provider chatgpt "請摘要這段內容。"
 ```bash
 ask-bridge "Rust struct 和 tuple 有什麼差異？"
 ask-bridge --provider gemini "Rust struct 和 tuple 有什麼差異？"
+ask-bridge --provider claude "Rust struct 和 tuple 有什麼差異？"
 ```
 
 執行後：
@@ -263,18 +266,19 @@ cat src/main.rs | ask-bridge "這段 Rust code 有記憶體洩漏風險嗎？"
 
 #### 附上圖片
 
-使用 `--image` 附上一或多張本機圖片（可重複指定）。此功能目前支援 ChatGPT；Gemini 圖片輸入尚未支援，搭配 `--provider gemini` 使用會立即回報錯誤。
+使用 `--image` 附上一或多張本機圖片（可重複指定）。此功能目前支援 ChatGPT 與 Claude；Gemini 圖片輸入尚未支援，搭配 `--provider gemini` 使用會立即回報錯誤。
 
 ```bash
 ask-bridge "請描述這張圖片的內容。" --image screenshot.png
 ask-bridge "比較這兩張圖的差異。" --image v1.png --image v2.png
+ask-bridge --provider claude "請描述這張圖片的內容。" --image screenshot.png
 ```
 
 支援的格式包含 PNG、JPEG、GIF、WebP、SVG、BMP 等。
 
 #### 附上文件
 
-使用 `--file` 附上一或多份本機文件（可重複指定），例如 PDF、Word、Excel、PowerPoint、純文字、Markdown、CSV、JSON、程式碼等。ChatGPT 與 Gemini 都支援此流程。
+使用 `--file` 附上一或多份本機文件（可重複指定），例如 PDF、Word、Excel、PowerPoint、純文字、Markdown、CSV、JSON、程式碼等。ChatGPT、Gemini 與 Claude 都支援此流程。
 
 ```bash
 ask-bridge "請摘要這份 PDF 的重點。" --file report.pdf
@@ -302,6 +306,8 @@ ask-bridge "證明這個數學問題。" --model o3
 ask-bridge "快速翻譯這段話。" --model 即時
 ask-bridge --provider gemini "用幾句話介紹 Rust。" --model "3.5 Flash"
 ask-bridge --provider gemini "用幾句話介紹 Rust。" --model "3.1 Pro"
+ask-bridge --provider claude "用幾句話介紹 Rust。" --model Sonnet
+ask-bridge --provider claude "證明這個數學問題。" --model Opus
 ```
 
 可用的模型名稱（視帳號權限與 provider UI 而定）：
@@ -309,6 +315,7 @@ ask-bridge --provider gemini "用幾句話介紹 Rust。" --model "3.1 Pro"
 - **ChatGPT 模型**：`GPT-5.5`、`GPT-5.4`、`GPT-5.3`、`o3`
 - **ChatGPT 思考強度**：`智慧`、`即時`、`中等`、`高`、`超高`、`專業`
 - **Gemini 模式**：`3.5 Flash`、`3.1 Flash-Lite`、`3.1 Pro`
+- **Claude 模型**：`Sonnet`、`Opus`、`Haiku`（實際名稱依 claude.ai 選單與帳號方案而定）
 
 > 若指定的名稱在選單中找不到，`ask-bridge` 會回報 `Model switch failed: error: model not found in menu` 並中止，不會送出 prompt。
 
@@ -319,6 +326,7 @@ ask-bridge --provider gemini "用幾句話介紹 Rust。" --model "3.1 Pro"
 ```bash
 ask-bridge open
 ask-bridge --provider gemini open
+ask-bridge --provider claude open
 ```
 
 ### 11. 關閉瀏覽器 instance

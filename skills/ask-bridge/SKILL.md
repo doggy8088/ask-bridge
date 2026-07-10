@@ -1,13 +1,13 @@
 ---
 name: ask-bridge
-description: "完整使用 ask-bridge CLI 的 Agent Skill。使用 ask-bridge 將低風險、探索性 AI 研究、摘要、文件分析、程式片段分析、錯誤訊息整理、方案比較、初稿產出或可委派的背景調查交給 ChatGPT 或 Gemini 網站。當 Codex 需要透過本機 ask-bridge 命令呼叫網站型 AI、利用 ChatGPT/Gemini 網頁額度、附加檔案或圖片、切換模型、取回回覆、下載生成圖片、管理瀏覽器 session、或查詢 ask-bridge 所有參數與子命令用法時使用。"
+description: "完整使用 ask-bridge CLI 的 Agent Skill。使用 ask-bridge 將低風險、探索性 AI 研究、摘要、文件分析、程式片段分析、錯誤訊息整理、方案比較、初稿產出或可委派的背景調查交給 ChatGPT、Gemini 或 Claude 網站。當 Codex 需要透過本機 ask-bridge 命令呼叫網站型 AI、利用 ChatGPT/Gemini/Claude 網頁額度、附加檔案或圖片、切換模型、取回回覆、下載生成圖片、管理瀏覽器 session、或查詢 ask-bridge 所有參數與子命令用法時使用。"
 ---
 
 # Ask Bridge
 
 ## 核心原則
 
-使用 `ask-bridge` 把低風險、探索性、可委派的 AI 任務交給 ChatGPT 或 Gemini 網站處理，再將回覆作為本機工作流程的參考輸入。不要把 provider 回覆視為事實來源、測試結果或已完成的程式碼變更。
+使用 `ask-bridge` 把低風險、探索性、可委派的 AI 任務交給 ChatGPT、Gemini 或 Claude 網站處理，再將回覆作為本機工作流程的參考輸入。不要把 provider 回覆視為事實來源、測試結果或已完成的程式碼變更。
 
 優先把主要 Coding Agent 保留給下列工作：讀取專案脈絡、修改檔案、執行測試、驗證行為、整合結論。把 `ask-bridge` 用於背景研究、摘要、候選方案、初稿與輔助分析。
 
@@ -65,9 +65,17 @@ ask-bridge -v
 }
 ```
 
+或：
+
+```json
+{
+  "provider": "claude"
+}
+```
+
 provider 優先序：
 
-1. CLI `--provider chatgpt|gemini`
+1. CLI `--provider chatgpt|gemini|claude`
 2. `~/.config/ask-bridge/config.json` 的 `provider`
 3. 內建預設 `chatgpt`
 
@@ -75,6 +83,7 @@ provider 優先序：
 
 ```sh
 ask-bridge config --provider gemini
+ask-bridge config --provider claude
 ```
 
 若要改回 ChatGPT：
@@ -100,6 +109,7 @@ ask-bridge --provider chatgpt '請摘要這段內容。'
 ```sh
 ask-bridge login
 ask-bridge --provider gemini login
+ask-bridge --provider claude login
 ask-bridge login --provider gemini
 ```
 
@@ -152,18 +162,18 @@ prompt + "\n\n" + stdin
 | 參數 | 用途 | 用法重點 |
 |---|---|---|
 | `[PROMPT]` | 要送給 provider 的文字 prompt | 可省略；若 stdin 有內容則使用 stdin；若兩者都有，會以兩個換行串接 |
-| `-p`, `--provider <PROVIDER>` | 選擇 provider | 可用 `chatgpt` 或 `gemini`；此為 global option，可放在子命令前後；優先權高於全域設定檔 |
+| `-p`, `--provider <PROVIDER>` | 選擇 provider | 可用 `chatgpt`、`gemini` 或 `claude`；此為 global option，可放在子命令前後；優先權高於全域設定檔 |
 | `--headless[=<HEADLESS>]` | 控制 Chrome 是否 headless | 預設 `true`；要顯示瀏覽器請用 `--headless=false`；不要寫成 `--headless false` |
 | `--new` | 開啟全新 provider 對話 | 會開新分頁並清理同 provider 舊分頁；用於隔離上下文 |
 | `-v`, `-V`, `--version` | 顯示版本 | `-V` 是原始碼中定義的短別名；文件與一般操作優先用 `-v` 或 `--version` |
 | `--verbose` | 顯示瀏覽器自動化流程 | 用於診斷 provider UI、登入、上傳、模型切換或等待回覆問題 |
 | `-o`, `--output <FILE>` | 將最終 Markdown 回覆寫入檔案 | 同時仍會在終端機輸出渲染結果；適合保留研究紀錄 |
 | `-i`, `--image-output <IMAGE_PATH>` | 下載 provider 回覆中的生成圖片 | 可指定資料夾或檔案路徑；可搭配一般 prompt、`get` 或 `open <url>` |
-| `--image <IMAGE_FILE>` | 附加圖片檔，可重複指定 | 目前只支援 ChatGPT；搭配 Gemini 會失敗 |
-| `--file <FILE>` | 附加文件檔，可重複指定 | 支援 PDF、Word、Excel、PowerPoint、純文字、Markdown、CSV、JSON、程式碼等；ChatGPT 與 Gemini 都可用 |
+| `--image <IMAGE_FILE>` | 附加圖片檔，可重複指定 | 支援 ChatGPT 與 Claude；搭配 Gemini 會失敗 |
+| `--file <FILE>` | 附加文件檔，可重複指定 | 支援 PDF、Word、Excel、PowerPoint、純文字、Markdown、CSV、JSON、程式碼等；ChatGPT、Gemini 與 Claude 都可用 |
 | `--model <MODEL>` | 送出 prompt 前切換模型 | 比對不分大小寫與標點；模型名稱取決於 provider UI 與帳號權限 |
 | `-h`, `--help` | 顯示 help | 可用 `ask-bridge --help` 或 `ask-bridge help <COMMAND>` |
-| `config` | 設定或顯示全域預設 provider | 使用 `ask-bridge config --provider <chatgpt|gemini>` |
+| `config` | 設定或顯示全域預設 provider | 使用 `ask-bridge config --provider <chatgpt|gemini|claude>` |
 
 ## Provider 選擇
 
@@ -175,18 +185,21 @@ ask-bridge --provider chatgpt '請分析這段程式碼的風險。'
 ask-bridge -p chatgpt '請整理這份文件的待辦。'
 ```
 
-使用 Gemini 時明確指定 provider：
+使用 Gemini 或 Claude 時明確指定 provider：
 
 ```sh
 ask-bridge --provider gemini '請比較這三個實作方向的風險與取捨。'
 ask-bridge -p gemini '請摘要這份文件。' --file notes.md
+ask-bridge --provider claude '請初步分析這段程式碼的風險。'
+ask-bridge -p claude '請摘要這份文件。' --file notes.md
 ```
 
 選擇原則：
 
 - 未指定 `--provider` 時，先依全域設定檔選擇 provider；設定檔不存在時使用 ChatGPT。
-- 使用 ChatGPT 作為未設定時的預設 provider，尤其是需要圖片輸入時。
+- 使用 ChatGPT 作為未設定時的預設 provider。
 - 使用 Gemini 做替代觀點、快速摘要或使用者明確要求 Gemini 時。
+- 使用 Claude 做程式碼分析、長文摘要、替代觀點或使用者明確要求 Claude 時；Claude 也支援 `--image` 圖片輸入。
 - 若 provider 失敗，可在不增加風險的情況下改用另一個 provider 一次。
 - 不要硬編不存在的模型名稱；只有使用者指定或專案文件明確列出時才使用 `--model`。
 
@@ -237,14 +250,15 @@ ask-bridge '請比較這兩份文件的差異。' --file old.md --file new.md
 ask-bridge --provider gemini '請摘要這份 PDF。' --file report.pdf
 ```
 
-對圖片使用 `--image`，且目前只用於 ChatGPT：
+對圖片使用 `--image`，目前支援 ChatGPT 與 Claude：
 
 ```sh
 ask-bridge '請描述這張截圖中的 UI 問題，並列出可能的 CSS 原因。' --image screenshot.png
 ask-bridge '請比較這兩張圖的差異。' --image before.png --image after.png
+ask-bridge --provider claude '請描述這張截圖中的 UI 問題。' --image screenshot.png
 ```
 
-同時附加圖片與文件時，使用 ChatGPT：
+同時附加圖片與文件時，使用 ChatGPT 或 Claude：
 
 ```sh
 ask-bridge '請對照設計圖與規格文件，列出不一致處。' --image design.png --file spec.md
@@ -282,6 +296,8 @@ ask-bridge '證明這個數學問題。' --model o3
 ask-bridge '快速翻譯這段話。' --model 即時
 ask-bridge --provider gemini '用幾句話介紹 Rust。' --model '3.5 Flash'
 ask-bridge --provider gemini '用幾句話介紹 Rust。' --model '3.1 Pro'
+ask-bridge --provider claude '用幾句話介紹 Rust。' --model Sonnet
+ask-bridge --provider claude '證明這個數學問題。' --model Opus
 ```
 
 模型比對不分大小寫與標點符號。若切換失敗，移除 `--model` 或改用 provider 預設模型，不要猜測替代模型名稱。
@@ -315,7 +331,7 @@ ask-bridge close
 
 | 子命令 | 用途 | 範例 |
 |---|---|---|
-| `login` | 開啟 provider 並等待使用者手動登入 | `ask-bridge login`、`ask-bridge --provider gemini login` |
+| `login` | 開啟 provider 並等待使用者手動登入 | `ask-bridge login`、`ask-bridge --provider gemini login`、`ask-bridge --provider claude login` |
 | `close` | 關閉 ask-bridge 管理的 Chrome instance | `ask-bridge close` |
 | `help` | 顯示 help | `ask-bridge help`、`ask-bridge help login` |
 
@@ -352,7 +368,7 @@ ask-bridge dump --verbose
 ask-bridge screenshot --headless=false
 ```
 
-Gemini 圖片輸入不支援時，改用 ChatGPT 或改以文字描述圖片內容。不要把同一個失敗命令無限制重試。
+Gemini 圖片輸入不支援時，改用 ChatGPT 或 Claude，或改以文字描述圖片內容。不要把同一個失敗命令無限制重試。
 
 模型切換失敗時，移除 `--model` 或改用 provider 預設模型，不要猜測替代模型名稱。
 
