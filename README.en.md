@@ -148,8 +148,8 @@ ask-bridge --provider claude login
 
 - This will automatically launch Google Chrome with a dedicated, persistent debug profile.
 - Log in manually to the selected provider page, such as `https://chatgpt.com/`, `https://gemini.google.com/app`, or `https://claude.ai/new`.
-- Once logged in, return to your terminal and press **`[Enter]`**.
-- The tool will verify your login status and save your profile. You only need to do this **once**!
+- The tool now checks login status every second automatically, so you can stay on the browser and it will return immediately after login is detected.
+- If login is not detected within `--timeout` seconds (default: 300), it will warn you to verify the result and retry.
 
 #### Global Provider Config
 

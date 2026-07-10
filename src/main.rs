@@ -4975,6 +4975,53 @@ fn check_login_status(
     Ok(signals.state(provider))
 }
 
+fn wait_for_login_completion(
+    config_path: &str,
+    provider: Provider,
+    timeout_seconds: u64,
+    verbose: bool,
+) -> (LoginState, bool) {
+    let timeout = Duration::from_secs(timeout_seconds.max(1));
+    let start = Instant::now();
+    let display_name = provider.display_name();
+
+    if verbose {
+        println!(
+            "Waiting for {} login status every second (timeout: {} seconds)...",
+            display_name,
+            timeout_seconds.max(1)
+        );
+    } else {
+        println!("Waiting for login completion (checking every second)...");
+    }
+
+    loop {
+        let state = match check_login_status(config_path, provider, verbose) {
+            Ok(state) => state,
+            Err(e) => {
+                if verbose {
+                    println!(
+                        "Warning: Failed to check {} login status: {}",
+                        display_name,
+                        e
+                    );
+                }
+                LoginState::Unknown
+            }
+        };
+
+        if state == LoginState::LoggedIn {
+            return (LoginState::LoggedIn, false);
+        }
+
+        if start.elapsed() >= timeout {
+            return (state, true);
+        }
+
+        thread::sleep(Duration::from_secs(1));
+    }
+}
+
 fn print_chrome_diagnostics(profile_path: &str) {
     let snapshot = inspect_chrome_debug_port(profile_path);
     let recorded_pid = read_chrome_pid().unwrap_or_else(|| "unknown".to_string());
@@ -5206,23 +5253,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 println!("\n========================================================");
                 println!("Please complete the login manually in the Chrome window.");
-                println!("Once you have successfully logged in, press [Enter] here.");
+                println!("The tool will automatically detect when login is complete every second.");
                 println!("========================================================\n");
 
-                let mut buffer = String::new();
-                io::stdin().read_line(&mut buffer)?;
+                let (login_state, timed_out) =
+                    wait_for_login_completion(&config_path, provider, cli.timeout, command_verbose);
 
-                match check_login_status(&config_path, provider, command_verbose) {
-                    Ok(LoginState::LoggedIn) => println!(
+                match (login_state, timed_out) {
+                    (LoginState::LoggedIn, _) => println!(
                         "Success: Logged in successfully! You can now use the `ask-bridge` command."
                     ),
-                    Ok(LoginState::LoggedOut) => println!(
-                        "Warning: We still detected a login button on the page. You might not be fully logged in. Please verify."
+                    (LoginState::LoggedOut, true) => println!(
+                        "Warning: Login timeout reached ({} seconds). Login still appears incomplete.",
+                        cli.timeout
                     ),
-                    Ok(LoginState::Unknown) => println!(
-                        "Warning: The page loaded, but ask-bridge could not confirm the account menu. Login status is unknown."
+                    (LoginState::Unknown, true) => println!(
+                        "Warning: Timeout reached ({} seconds). Login status is still unknown; please verify manually.",
+                        cli.timeout
                     ),
-                    Err(e) => println!("Warning: Failed to verify login status: {}", e),
+                    (LoginState::LoggedOut, false) | (LoginState::Unknown, false) => println!(
+                        "Warning: Login status changed while waiting. Please verify the result and rerun if needed."
+                    ),
                 }
                 if command_verbose {
                     match chrome_profile_path() {

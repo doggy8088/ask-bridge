@@ -144,7 +144,7 @@ ask-bridge --provider claude login
 - 使用專屬且持久化的 debug profile 啟動 Google Chrome。
 - 開啟所選 provider 頁面，例如 `https://chatgpt.com/`、`https://gemini.google.com/app` 或 `https://claude.ai/new`。
 - 等待你手動登入帳號。
-- 在你回到終端機按 Enter 後，驗證登入狀態並保存 profile。
+- 本工具會每秒自動偵測登入狀態，不需要你回到終端機按 Enter；若超過 `--timeout`（預設 300 秒）仍未偵測到登入完成，會提醒你再確認一次。
 
 此流程通常只需要執行一次。
 
