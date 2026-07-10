@@ -45,7 +45,7 @@ elif [ "$OS" = "Linux" ]; then
 fi
 
 # 3. Determine target architecture and file name
-VERSION="0.2.1"
+VERSION="0.2.2"
 REPO_OWNER="doggy8088"
 REPO_NAME="ask-bridge"
 
