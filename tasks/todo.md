@@ -190,7 +190,7 @@
 - [x] 將版本提升為 `0.2.3`，並同步更新 6 個版本錨點（`Cargo.toml`, `package.json`, `src/main.rs`, `install.ps1`, `install.sh`, `scripts/ask.sh`）。
 - [x] 通過格式、建置、測試與 npm 測試：`cargo fmt --all -- --check`、`cargo check`、`cargo test`、`npm test`。
 - [x] `Cargo.lock` 透過 `cargo check` 同步更新，並補齊 `CHANGELOG.md` 的 0.2.3 條目。
-- [ ] 產生 `chore(release)` 提交並建立 `v0.2.3` tag；推送 tag 讓 CI `Release` 流程執行。
+- [x] 產生 `chore(release)` 提交並建立 `v0.2.3` tag；推送 tag 讓 CI `Release` 流程執行。
 
 ## Risk & Rollback
 - Risk level: low
@@ -206,8 +206,8 @@
 - [x] Update all required version files
 - [x] Add changelog entry
 - [x] Run fmt/check/tests
-- [ ] Commit release bump
-- [ ] Create annotated tag + push to trigger CI release
+- [x] Commit release bump
+- [x] Create annotated tag + push to trigger CI release
 
 ## Results
 - 已同步更新版本到 `0.2.3`（6 個版本檔 + `Cargo.lock`）。
@@ -217,4 +217,4 @@
   - `cargo check`
   - `cargo test`（54 passed）
   - `npm test`（4 passed）
-- 待完成項目：`git commit`、建立 `v0.2.3` tag 並推送後由 CI `Release` workflow 發佈。
+- 已完成：`chore(release): bump version to 0.2.3` commit、`v0.2.3` tag 推送；CI `Release` workflow 已完成並發佈成功，並補上繁中 release note。
