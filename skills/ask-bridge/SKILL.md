@@ -306,7 +306,7 @@ ask-bridge --provider claude '證明這個數學問題。' --model Opus
 ## ChatGPT Agent 提及語法
 
 使用 ChatGPT 時，prompt 可採用 `@Agent名稱 prompt正文` 格式。
-`ask-bridge` 會先輸入 Agent mention、等待候選選單出現，再選取對應項目並輸入正文。
+`ask-bridge` 會先輸入 Agent mention、等待候選選單出現後按 `Tab` 選取第一個候選項目，再貼上正文。
 
 ### 語法與限制
 
