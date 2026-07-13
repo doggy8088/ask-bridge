@@ -171,6 +171,7 @@ prompt + "\n\n" + stdin
 | `-i`, `--image-output <IMAGE_PATH>` | 下載 provider 回覆中的生成圖片 | 可指定資料夾或檔案路徑；可搭配一般 prompt、`get` 或 `open <url>` |
 | `--image <IMAGE_FILE>` | 附加圖片檔，可重複指定 | 支援 ChatGPT 與 Claude；搭配 Gemini 會失敗 |
 | `--file <FILE>` | 附加文件檔，可重複指定 | 支援 PDF、Word、Excel、PowerPoint、純文字、Markdown、CSV、JSON、程式碼等；ChatGPT、Gemini 與 Claude 都可用 |
+| `--timeout <SECONDS>` | 最大等待回應時間（秒） | 預設為 `300` 秒，最小值為 `1`；provider 回應較慢時可適度調高 |
 | `--model <MODEL>` | 送出 prompt 前切換模型 | 比對不分大小寫與標點；模型名稱取決於 provider UI 與帳號權限 |
 | `-h`, `--help` | 顯示 help | 可用 `ask-bridge --help` 或 `ask-bridge help <COMMAND>` |
 | `config` | 設定或顯示全域預設 provider | 使用 `ask-bridge config --provider <chatgpt|gemini|claude>` |
@@ -302,6 +303,30 @@ ask-bridge --provider claude '證明這個數學問題。' --model Opus
 
 模型比對不分大小寫與標點符號。若切換失敗，移除 `--model` 或改用 provider 預設模型，不要猜測替代模型名稱。
 
+## ChatGPT Agent 提及語法
+
+使用 ChatGPT 時，prompt 可採用 `@Agent名稱 prompt正文` 格式。
+`ask-bridge` 會先輸入 Agent mention、等待候選選單出現，再選取對應項目並輸入正文。
+
+### 語法與限制
+
+- **格式**：`@Agent名稱 prompt正文`
+- **名稱限制**：Agent 名稱必須由 1 至 10 個非空白字元組成。
+- **正文限制**：Agent 名稱後必須至少有一個空白，且正文不可為空。
+- **Provider 限制**：此特殊處理只適用於 ChatGPT；Gemini 與 Claude 會將它作為一般文字 prompt。
+- **Fallback**：格式不符合時，不會觸發 Agent mention，而會按照一般 prompt 處理。
+
+### 使用範例
+
+```sh
+ask-bridge '@研究助手 請摘要這份規格並列出風險。' \
+  --file docs/spec.md
+
+ask-bridge --provider chatgpt \
+  '@程式審查 請檢查這份程式碼的風險。' \
+  --file src/main.rs
+```
+
 ## 對話與瀏覽器控制
 
 需要隔離上下文時使用 `--new`：
@@ -333,6 +358,8 @@ ask-bridge close
 |---|---|---|
 | `login` | 開啟 provider 並等待使用者手動登入 | `ask-bridge login`、`ask-bridge --provider gemini login`、`ask-bridge --provider claude login` |
 | `close` | 關閉 ask-bridge 管理的 Chrome instance | `ask-bridge close` |
+| `config` | 顯示或設定全域預設 provider | `ask-bridge config`、`ask-bridge config --provider gemini` |
+| `update` | 使用官方安裝流程更新 ask-bridge | `ask-bridge update` |
 | `help` | 顯示 help | `ask-bridge help`、`ask-bridge help login` |
 
 隱藏或維護用子命令：
