@@ -1,4 +1,4 @@
 interface:
   display_name: "Ask Bridge"
-  short_description: "委派研究工作給 ChatGPT 或 Gemini 網站"
+  short_description: "委派研究工作給 ChatGPT、Gemini 或 Claude 網站"
   default_prompt: "使用 $ask-bridge 將這項可委派的研究任務交給 ask-bridge。"
