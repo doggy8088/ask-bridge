@@ -29,11 +29,16 @@ struct LoginSignals {
     auth_control: bool,
     auth_path: bool,
     composer: bool,
+    #[serde(default = "default_true")]
     stable: bool,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 impl LoginSignals {
-    fn state(self, provider: Provider) -> LoginState {
+    fn state(self, _provider: Provider) -> LoginState {
         if self.auth_path {
             LoginState::LoggedOut
         } else if self.account {
@@ -42,7 +47,7 @@ impl LoginSignals {
             LoginState::Unknown
         } else if self.auth_control {
             LoginState::LoggedOut
-        } else if self.composer && provider == Provider::ChatGpt {
+        } else if self.composer {
             LoginState::LoggedIn
         } else {
             LoginState::Unknown
@@ -265,7 +270,8 @@ impl Provider {
                         account: isVisible(account),
                         auth_control: Boolean(signIn),
                         auth_path: authPath,
-                        composer: Boolean(composer)
+                        composer: Boolean(composer),
+                        stable: true
                     };
                 }"#
             }
@@ -2784,7 +2790,7 @@ mod tests {
     }
 
     #[test]
-    fn gemini_composer_without_account_remains_unknown() {
+    fn gemini_composer_without_account_has_logged_in_state() {
         let signals = LoginSignals {
             account: false,
             auth_control: false,
@@ -2793,7 +2799,20 @@ mod tests {
             stable: true,
         };
 
-        assert_eq!(signals.state(Provider::Gemini), LoginState::Unknown);
+        assert_eq!(signals.state(Provider::Gemini), LoginState::LoggedIn);
+    }
+
+    #[test]
+    fn claude_composer_without_account_has_logged_in_state() {
+        let signals = LoginSignals {
+            account: false,
+            auth_control: false,
+            auth_path: false,
+            composer: true,
+            stable: true,
+        };
+
+        assert_eq!(signals.state(Provider::Claude), LoginState::LoggedIn);
     }
 
     #[test]
