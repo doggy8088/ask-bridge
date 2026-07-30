@@ -50,15 +50,17 @@ jobs:
             throw "Missing updater binary: $updateBinary"
           }
           if ("${{ runner.os }}" -eq "Windows") {
-            $stream = [System.IO.File]::OpenRead($binary)
-            try {
-              $firstByte = $stream.ReadByte()
-              $secondByte = $stream.ReadByte()
-            } finally {
-              $stream.Dispose()
-            }
-            if ($firstByte -ne 0x4D -or $secondByte -ne 0x5A) {
-              throw "Windows release binary is not a PE executable (missing MZ header)"
+            foreach ($windowsBinary in @($binary, $updateBinary)) {
+              $stream = [System.IO.File]::OpenRead($windowsBinary)
+              try {
+                $firstByte = $stream.ReadByte()
+                $secondByte = $stream.ReadByte()
+              } finally {
+                $stream.Dispose()
+              }
+              if ($firstByte -ne 0x4D -or $secondByte -ne 0x5A) {
+                throw "Windows release binary '$windowsBinary' is not a PE executable (missing MZ header)"
+              }
             }
           }
 

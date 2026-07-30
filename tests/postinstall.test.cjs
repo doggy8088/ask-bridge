@@ -14,6 +14,7 @@ const {
   sha256,
   verifyBinaryFormat,
   verifyChecksum,
+  verifyInstalledBinary,
 } = require('../npm/postinstall.cjs');
 
 test('maps supported platforms to Rust targets', () => {
@@ -64,5 +65,12 @@ test('verifies native binary formats before installation', () => {
   assert.throws(
     () => verifyBinaryFormat(windowsBinary, 'darwin'),
     /binary format does not match darwin/,
+  );
+});
+
+test('rejects executable version output from a different program', () => {
+  assert.throws(
+    () => verifyInstalledBinary(process.execPath, process.platform),
+    /unexpected version output/,
   );
 });

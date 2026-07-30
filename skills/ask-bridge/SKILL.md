@@ -51,7 +51,7 @@ where.exe ask-bridge
 ask-bridge --version
 ```
 
-第一筆路徑應為 `$HOME\.local\bin\ask-bridge.exe`。若其他舊命令排在前面，
+第一筆展開後的完整路徑結尾應為 `\.local\bin\ask-bridge.exe`。若其他舊命令排在前面，
 重新執行官方 `install.ps1`；安裝程式會驗證 Windows PE 格式與版本輸出，
 並將正式安裝目錄移到 User PATH 最前面。
 
