@@ -673,7 +673,8 @@ struct Cli {
     timeout: u64,
 
     /// Switch the provider model before sending the prompt.
-    /// Use the exact primary menu label; subtitles and badges are ignored.
+    /// Match the primary menu label case- and punctuation-insensitively;
+    /// subtitles and badges are ignored.
     #[arg(long = "model", value_name = "MODEL")]
     model: Option<String>,
 

@@ -10,7 +10,7 @@
   function normalizeLabel(value) {
     return String(value || '')
       .normalize('NFKC')
-      .toLocaleLowerCase()
+      .toLowerCase()
       .replace(/[^\p{Letter}\p{Number}]+/gu, '');
   }
 
@@ -33,7 +33,7 @@
       source.ariaSelected,
       source.dataSelected,
       source.dataState,
-    ].map((value) => String(value || '').toLocaleLowerCase());
+    ].map((value) => String(value || '').toLowerCase());
 
     return {
       primaryLabel: lines[0] || '',
