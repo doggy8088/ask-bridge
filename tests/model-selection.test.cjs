@@ -7,6 +7,7 @@ const {
   availablePrimaryLabels,
   findMatchingEntry,
   parseMenuEntry,
+  selectProviderOption,
   selectionVerified,
 } = require('../src/model-selection.cjs');
 
@@ -95,4 +96,79 @@ test('verifies selection through checked state or the picker primary label', () 
   assert.equal(selectionVerified(unchecked, '高', ['high', '高']), true);
   assert.equal(selectionVerified(unchecked, '中', ['high', '高']), false);
   assert.equal(selectionVerified(undefined, 'Pro 延伸', ['Pro Extended', 'Pro 延伸']), true);
+});
+
+test('revisits ChatGPT nested menus when verifying a selected model', async () => {
+  const previousDocument = global.document;
+  const previousKeyboardEvent = global.KeyboardEvent;
+  const previousMouseEvent = global.MouseEvent;
+  let menuState = 'closed';
+
+  function element(text, attributes = {}, click = () => {}) {
+    return {
+      innerText: text,
+      textContent: text,
+      click,
+      dispatchEvent() {},
+      getAttribute(name) {
+        const value = typeof attributes[name] === 'function'
+          ? attributes[name]()
+          : attributes[name];
+        return value === undefined ? null : value;
+      },
+      getClientRects() {
+        return [{}];
+      },
+      querySelector() {
+        return null;
+      },
+    };
+  }
+
+  const picker = element('ChatGPT', {}, () => {
+    menuState = menuState === 'closed' ? 'top' : 'closed';
+  });
+  const submenu = element('更多模型', { 'aria-haspopup': 'menu' }, () => {
+    menuState = 'nested';
+  });
+  const model = element(
+    'GPT-5.6 Sol\n適合程式設計',
+    {
+      'aria-checked': () => (menuState === 'nested' ? 'true' : 'false'),
+    },
+    () => {
+      menuState = 'closed';
+    },
+  );
+
+  global.KeyboardEvent = class KeyboardEvent {};
+  global.MouseEvent = class MouseEvent {};
+  global.document = {
+    dispatchEvent() {},
+    querySelector(selector) {
+      return selector === 'button.__composer-pill' ? picker : null;
+    },
+    querySelectorAll(selector) {
+      if (selector === 'button') return [picker];
+      if (menuState === 'top') return [submenu];
+      if (menuState === 'nested') return [model];
+      return [];
+    },
+  };
+
+  try {
+    const result = await selectProviderOption({
+      provider: 'chatgpt',
+      targetAliases: ['GPT-5.6 Sol'],
+      verificationAliases: ['GPT-5.6 Sol'],
+      sleep: async () => {},
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.selected, 'GPT-5.6 Sol');
+  } finally {
+    global.document = previousDocument;
+    global.KeyboardEvent = previousKeyboardEvent;
+    global.MouseEvent = previousMouseEvent;
+  }
 });

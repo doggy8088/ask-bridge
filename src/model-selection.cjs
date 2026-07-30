@@ -123,11 +123,46 @@
     return undefined;
   }
 
+  async function findProviderOption(config, menuSelector, available, sleep) {
+    const visited = new Set();
+    const maxDepth = config.provider === 'chatgpt' ? 6 : 1;
+
+    for (let depth = 0; depth < maxDepth; depth += 1) {
+      const elements = visibleElements(menuSelector);
+      const entries = elements.map(entryFromElement);
+      entries.forEach((entry) => available.add(entry.primaryLabel));
+      const leaves = entries.filter(
+        (entry) => entry.element.getAttribute('aria-haspopup') !== 'menu',
+      );
+      const chosen = findMatchingEntry(leaves, config.targetAliases);
+      if (chosen || config.provider !== 'chatgpt') return chosen;
+
+      const triggers = entries.filter(
+        (entry) => entry.element.getAttribute('aria-haspopup') === 'menu',
+      );
+      const trigger = triggers.find((entry) => {
+        const key = `${normalizeLabel(entry.primaryLabel)}|${entry.element.getAttribute('aria-label') || ''}`;
+        return !visited.has(key);
+      });
+      if (!trigger) return undefined;
+
+      const key = `${normalizeLabel(trigger.primaryLabel)}|${trigger.element.getAttribute('aria-label') || ''}`;
+      visited.add(key);
+      trigger.element.dispatchEvent(new MouseEvent('pointerenter', { bubbles: true }));
+      trigger.element.dispatchEvent(new MouseEvent('pointermove', { bubbles: true }));
+      trigger.element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      trigger.element.click();
+      await sleep(750);
+    }
+
+    return undefined;
+  }
+
   async function selectProviderOption(config) {
-    const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+    const sleep = config.sleep
+      || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
     const menuSelector = '[role="menuitem"], [role="menuitemradio"], [role="option"]';
     const available = new Set();
-    const visited = new Set();
 
     document.dispatchEvent(new KeyboardEvent('keydown', {
       key: 'Escape',
@@ -154,31 +189,7 @@
     dispatchClick(picker);
     await sleep(800);
 
-    let chosen;
-    const maxDepth = config.provider === 'chatgpt' ? 6 : 1;
-    for (let depth = 0; depth < maxDepth && !chosen; depth += 1) {
-      const elements = visibleElements(menuSelector);
-      const entries = elements.map(entryFromElement);
-      entries.forEach((entry) => available.add(entry.primaryLabel));
-      const leaves = entries.filter((entry) => entry.element.getAttribute('aria-haspopup') !== 'menu');
-      chosen = findMatchingEntry(leaves, config.targetAliases);
-      if (chosen || config.provider !== 'chatgpt') break;
-
-      const triggers = entries.filter((entry) => entry.element.getAttribute('aria-haspopup') === 'menu');
-      const trigger = triggers.find((entry) => {
-        const key = `${normalizeLabel(entry.primaryLabel)}|${entry.element.getAttribute('aria-label') || ''}`;
-        return !visited.has(key);
-      });
-      if (!trigger) break;
-
-      const key = `${normalizeLabel(trigger.primaryLabel)}|${trigger.element.getAttribute('aria-label') || ''}`;
-      visited.add(key);
-      trigger.element.dispatchEvent(new MouseEvent('pointerenter', { bubbles: true }));
-      trigger.element.dispatchEvent(new MouseEvent('pointermove', { bubbles: true }));
-      trigger.element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-      trigger.element.click();
-      await sleep(750);
-    }
+    const chosen = await findProviderOption(config, menuSelector, available, sleep);
 
     if (!chosen) {
       document.dispatchEvent(new KeyboardEvent('keydown', {
@@ -208,8 +219,7 @@
       picker = findPicker(config.provider) || picker;
       dispatchClick(picker);
       await sleep(500);
-      const refreshedEntries = visibleElements(menuSelector).map(entryFromElement);
-      currentEntry = findMatchingEntry(refreshedEntries, config.targetAliases);
+      currentEntry = await findProviderOption(config, menuSelector, available, sleep);
       verified = selectionVerified(
         currentEntry,
         textOf(picker),
