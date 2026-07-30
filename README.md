@@ -201,7 +201,9 @@ ask-bridge --provider claude "Rust struct 和 tuple 有什麼差異？"
 ask-bridge "誰是保哥？" --new
 ```
 
-此模式會開啟新的所選 provider 分頁，並清理先前同一 provider 的分頁。
+此模式只會開啟並使用新的所選 provider 分頁。執行前已存在的 provider
+分頁與其他網站分頁都會保留；若無法唯一辨識新分頁，命令會停止且不會改用
+或關閉既有分頁。
 
 ### 4. Headless 模式
 

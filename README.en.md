@@ -203,7 +203,9 @@ ask-bridge "誰是保哥？" --new
 ```
 
 - This will open a **brand new selected-provider tab**.
-- It will **automatically close previous tabs for the same provider** to keep your workspace clean and organized.
+- All provider and non-provider tabs that existed before the command will be preserved.
+- If the new tab cannot be identified unambiguously, the command stops instead of
+  reusing or closing an existing tab.
 
 ### 4. Headless Mode (Default: True)
 
