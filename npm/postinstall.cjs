@@ -5,9 +5,12 @@ const { createHash } = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 const {
   chmodSync,
+  closeSync,
   copyFileSync,
   existsSync,
   mkdirSync,
+  openSync,
+  readSync,
   readFileSync,
   readdirSync,
   rmSync,
@@ -73,8 +76,16 @@ function verifyChecksum(filePath, checksumText) {
 }
 
 function verifyBinaryFormat(filePath, platform = process.platform) {
-  const header = readFileSync(filePath).subarray(0, 4);
-  const magic = header.toString('hex');
+  const header = Buffer.alloc(4);
+  const descriptor = openSync(filePath, 'r');
+  let bytesRead;
+  try {
+    bytesRead = readSync(descriptor, header, 0, header.length, 0);
+  } finally {
+    closeSync(descriptor);
+  }
+  const binaryHeader = header.subarray(0, bytesRead);
+  const magic = binaryHeader.toString('hex');
   const supportedMagic = {
     win32: ['4d5a'],
     linux: ['7f454c46'],

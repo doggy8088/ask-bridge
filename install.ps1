@@ -146,8 +146,12 @@ function Confirm-AskBridgeBinary {
     )
 
     Assert-WindowsExecutable -Path $Path
-    $versionOutput = & $Path --version 2>&1
-    $versionExitCode = $LASTEXITCODE
+    try {
+        $versionOutput = & $Path --version 2>&1
+        $versionExitCode = $LASTEXITCODE
+    } catch {
+        throw "Installed ask-bridge binary could not start: $($_.Exception.Message)"
+    }
     $versionText = ($versionOutput | Out-String).Trim()
     if ($versionExitCode -ne 0) {
         throw "Installed ask-bridge binary failed its version check with exit code $versionExitCode`: $versionText"
@@ -192,7 +196,7 @@ function Confirm-AskBridgeCommandResolution {
     $resolvedPath = [System.IO.Path]::GetFullPath($resolved.Source)
     $expectedFullPath = [System.IO.Path]::GetFullPath($ExpectedPath)
     if ($resolvedPath -ine $expectedFullPath) {
-        throw "The 'ask-bridge' command resolves to '$resolvedPath' instead of the newly installed '$expectedFullPath'."
+        throw "The 'ask-bridge.exe' command resolves to '$resolvedPath' instead of the newly installed '$expectedFullPath'."
     }
 }
 
