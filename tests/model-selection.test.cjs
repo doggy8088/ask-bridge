@@ -176,8 +176,12 @@ test('revisits ChatGPT nested menus when verifying a selected model', async () =
     assert.deepEqual(pointerEventTypes, [
       'pointerdown',
       'pointerup',
+      'pointerenter',
+      'pointermove',
       'pointerdown',
       'pointerup',
+      'pointerenter',
+      'pointermove',
     ]);
   } finally {
     global.document = previousDocument;

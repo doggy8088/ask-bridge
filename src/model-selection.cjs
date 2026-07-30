@@ -119,6 +119,23 @@
     element.click();
   }
 
+  function dispatchHover(element) {
+    if (typeof PointerEvent === 'function') {
+      const pointerOptions = {
+        bubbles: true,
+        isPrimary: true,
+        pointerId: 1,
+        pointerType: 'mouse',
+      };
+      element.dispatchEvent(new PointerEvent('pointerenter', pointerOptions));
+      element.dispatchEvent(new PointerEvent('pointermove', pointerOptions));
+    } else {
+      element.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+      element.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }));
+    }
+    element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+  }
+
   function findPicker(provider) {
     if (provider === 'chatgpt') {
       return document.querySelector('button.__composer-pill');
@@ -159,9 +176,7 @@
 
       const key = `${normalizeLabel(trigger.primaryLabel)}|${trigger.element.getAttribute('aria-label') || ''}`;
       visited.add(key);
-      trigger.element.dispatchEvent(new MouseEvent('pointerenter', { bubbles: true }));
-      trigger.element.dispatchEvent(new MouseEvent('pointermove', { bubbles: true }));
-      trigger.element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      dispatchHover(trigger.element);
       trigger.element.click();
       await sleep(750);
     }
