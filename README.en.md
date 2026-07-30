@@ -39,6 +39,7 @@ Unlike typical API clients, `ask-bridge` operates inside a real Chrome browser w
 - **🖥️ Pipe & Stdin Support**: Supports piping prompts via `stdin` (e.g. `cat report.txt | ask-bridge "summarize this"`).
 - **📎 Image & File Attachments**: Attach local images with `--image` (supported on ChatGPT and Claude), or documents (PDF, Word, Excel, plain text, Markdown, JSON, etc.) with `--file`; Gemini currently supports `--file` and rejects `--image`.
 - **🔀 Model Switching**: Use `--model` to switch the provider model before the prompt is sent, such as ChatGPT `GPT-5.4`, Gemini `3.5 Flash`, or Claude `Sonnet`.
+- **Resume Conversations**: Use `--session`, `--session-id`, or `--session-url` to continue an existing provider conversation with a new terminal prompt.
 - **Response Timeout**: Use `--timeout <seconds>` to control how long to wait for a provider response, defaulting to `300` seconds.
 - **🔍 Quiet by Default & Verbose Mode**: Quiet and clean output by default (displaying only the generated response), with an optional `--verbose` flag to display full browser state logs if needed.
 - **Version Info**: Use `-v` or `--version` to print the current version number.
@@ -207,7 +208,25 @@ ask-bridge "誰是保哥？" --new
 - If the new tab cannot be identified unambiguously, the command stops instead of
   reusing or closing an existing tab.
 
-### 4. Headless Mode (Default: True)
+### 4. Resume an Existing Conversation
+
+Pass either a provider conversation ID or a full conversation URL to continue its
+existing web context:
+
+```bash
+ask-bridge --provider chatgpt --session-id "conversation-uuid" "Continue the previous plan."
+ask-bridge --session-url "https://chatgpt.com/c/conversation-uuid" "Produce the next steps."
+ask-bridge --provider gemini --session "conversation-id" "Continue the analysis."
+```
+
+`--session`, `--session-id`, and `--session-url` are aliases for the same option.
+An ID uses the selected or configured provider to build the conversation URL. A
+full URL identifies its provider automatically. The command stops before opening
+Chrome when an explicitly selected provider conflicts with the URL, the URL does
+not belong to a supported provider, or `--new` is also supplied. Existing tabs
+are preserved.
+
+### 5. Headless Mode (Default: True)
 
 By default, standard queries run Chrome in **headless mode** (`--headless=true`) so that the browser operates silently in the background without stealing your focus or popping up windows.
 
@@ -219,7 +238,7 @@ ask-bridge "誰是保哥？" --headless=false
 
 *Note: `ask-bridge login` always overrides the default and runs in **headful mode** so you can interact with the UI. For other subcommands, pass `--headless=false` when you want a visible browser.*
 
-### 5. Verbose Mode (`--verbose`)
+### 6. Verbose Mode (`--verbose`)
 
 By default, `ask-bridge` runs in a **quiet, clean mode** that hides all background browser-control logs (such as "Checking open Chrome tabs...", "Typing prompt...", etc.) and only displays the final markdown answer. However, it still plays an animated rotating spinner in your terminal while waiting for the provider to generate a response.
 
@@ -236,7 +255,7 @@ This will print every stage of the browser automation:
 - Submitting...
 - Waiting for provider response...
 
-### 6. Response Timeout (`--timeout`)
+### 7. Response Timeout (`--timeout`)
 
 The default wait time is 300 seconds. If a provider takes longer, increase (or decrease) the timeout:
 
@@ -252,7 +271,7 @@ ask-bridge "Short answer" --timeout 60
 
 If the response does not complete within the configured seconds, `ask-bridge` will stop waiting and print a timeout warning.
 
-### 7. Version Info
+### 8. Version Info
 
 Use `-v` or `--version` to print the current version number:
 
@@ -260,7 +279,7 @@ Use `-v` or `--version` to print the current version number:
 ask-bridge -v
 ```
 
-### 8. Piping & Stdin Support
+### 9. Piping & Stdin Support
 
 You can pipe text or files directly into `ask-bridge`:
 
@@ -280,7 +299,7 @@ Or read files:
 cat src/main.rs | ask-bridge "Are there any memory leaks in this Rust code?"
 ```
 
-### 8. Attaching Images or Files
+### 10. Attaching Images or Files
 
 Instead of piping file contents into the prompt, you can upload local files as attachments directly to the selected provider.
 
@@ -312,7 +331,7 @@ You can attach images and documents at the same time:
 ask-bridge "Compare this design image against the spec document and list inconsistencies." --image design.png --file spec.docx
 ```
 
-### 9. Switch Model
+### 11. Switch Model
 
 Use `--model` to automatically switch the provider model before the prompt is sent. Matching is case- and punctuation-insensitive (`-`, `.`, spaces, etc. are ignored).
 
@@ -335,7 +354,7 @@ Available model names (depending on your account entitlements and provider UI):
 
 > If the requested name is not found in the menu, `ask-bridge` reports `Model switch failed: error: model not found in menu` and aborts without submitting the prompt.
 
-### 10. Just Open a Provider
+### 12. Just Open a Provider
 
 To quickly launch the browser and open the selected provider without sending any query:
 
@@ -345,7 +364,7 @@ ask-bridge --provider gemini open
 ask-bridge --provider claude open
 ```
 
-### 11. Close the Browser Instance
+### 13. Close the Browser Instance
 
 To close the Chrome debug profile instance managed by `ask-bridge`:
 

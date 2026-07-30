@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
+use url::Url;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -87,17 +88,49 @@ impl Provider {
     }
 
     fn owns_url(self, url: &str) -> bool {
-        match self {
-            Provider::ChatGpt => url.contains("chatgpt.com"),
-            Provider::Gemini => url.contains("gemini.google.com"),
-            Provider::Claude => url.contains("claude.ai"),
-        }
+        Self::from_url(url) == Some(self)
     }
 
     fn from_url(url: &str) -> Option<Self> {
-        [Provider::ChatGpt, Provider::Gemini, Provider::Claude]
-            .into_iter()
-            .find(|provider| provider.owns_url(url))
+        let parsed = Url::parse(url).ok()?;
+        if parsed.scheme() != "https" {
+            return None;
+        }
+
+        match parsed.host_str()?.to_ascii_lowercase().as_str() {
+            "chatgpt.com" | "www.chatgpt.com" => Some(Provider::ChatGpt),
+            "gemini.google.com" => Some(Provider::Gemini),
+            "claude.ai" | "www.claude.ai" => Some(Provider::Claude),
+            _ => None,
+        }
+    }
+
+    fn conversation_url_from_id(self, session_id: &str) -> String {
+        match self {
+            Provider::ChatGpt => format!("https://chatgpt.com/c/{session_id}"),
+            Provider::Gemini => format!("https://gemini.google.com/app/{session_id}"),
+            Provider::Claude => format!("https://claude.ai/chat/{session_id}"),
+        }
+    }
+
+    fn owns_conversation_url(self, url: &Url) -> bool {
+        if Self::from_url(url.as_str()) != Some(self) {
+            return false;
+        }
+
+        let path_segments: Vec<&str> = url
+            .path_segments()
+            .map(|segments| segments.filter(|segment| !segment.is_empty()).collect())
+            .unwrap_or_default();
+        let marker = match self {
+            Provider::ChatGpt => "c",
+            Provider::Gemini => "app",
+            Provider::Claude => "chat",
+        };
+
+        path_segments
+            .windows(2)
+            .any(|segments| segments[0] == marker && !segments[1].is_empty())
     }
 
     fn ready_check_js(self) -> &'static str {
@@ -449,6 +482,15 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     new: bool,
 
+    /// Resume an existing conversation by provider session ID or full conversation URL.
+    #[arg(
+        long = "session",
+        visible_aliases = ["session-id", "session-url"],
+        value_name = "URL_OR_ID",
+        conflicts_with = "new"
+    )]
+    session: Option<String>,
+
     /// Print version information.
     #[arg(
         long = "version",
@@ -743,6 +785,55 @@ fn unique_new_page_id(before: &[Page], after: &[Page]) -> Result<usize, String> 
             new_page_ids
         )),
     }
+}
+
+fn resolve_session_target(
+    selected_provider: Provider,
+    provider_was_explicit: bool,
+    session: &str,
+) -> Result<(Provider, String), String> {
+    let session = session.trim();
+    if session.is_empty() {
+        return Err("Session ID or URL cannot be empty".to_string());
+    }
+
+    if let Ok(url) = Url::parse(session) {
+        let session_provider = Provider::from_url(url.as_str()).ok_or_else(|| {
+            "Session URL must use HTTPS and belong to chatgpt.com, gemini.google.com, or claude.ai"
+                .to_string()
+        })?;
+        if !session_provider.owns_conversation_url(&url) {
+            return Err(format!(
+                "URL is not a supported {} conversation URL",
+                session_provider.display_name()
+            ));
+        }
+        if provider_was_explicit && session_provider != selected_provider {
+            return Err(format!(
+                "Session URL belongs to {}, but --provider selected {}",
+                session_provider.display_name(),
+                selected_provider.display_name()
+            ));
+        }
+
+        return Ok((session_provider, url.to_string()));
+    }
+
+    if session.len() > 256
+        || !session
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err(
+            "Session ID may contain only ASCII letters, digits, hyphens, and underscores"
+                .to_string(),
+        );
+    }
+
+    Ok((
+        selected_provider,
+        selected_provider.conversation_url_from_id(session),
+    ))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2070,6 +2161,13 @@ fn render_markdown(markdown: &str, use_glow: bool) -> Result<(), String> {
 }
 
 fn validate_provider_feature_support(provider: Provider, cli: &Cli) -> Result<(), String> {
+    if cli.session.is_some() && cli.command.is_some() {
+        return Err(
+            "--session is supported only for a prompt invocation, not with a subcommand"
+                .to_string(),
+        );
+    }
+
     if provider == Provider::Gemini && !cli.images.is_empty() {
         return Err(
             "Gemini image attachments are not supported yet. Use --file for Gemini document attachments."
@@ -2482,6 +2580,31 @@ mod tests {
     }
 
     #[test]
+    fn parses_session_id_alias_and_rejects_new_session_conflict() {
+        let cli = Cli::try_parse_from([
+            "ask-bridge",
+            "--provider",
+            "chatgpt",
+            "--session-id",
+            "conversation-123",
+            "continue",
+        ])
+        .unwrap();
+        assert_eq!(cli.session.as_deref(), Some("conversation-123"));
+
+        assert!(
+            Cli::try_parse_from([
+                "ask-bridge",
+                "--new",
+                "--session",
+                "conversation-123",
+                "continue",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
     fn maps_provider_urls() {
         assert_eq!(
             Provider::from_url("https://chatgpt.com/c/abc"),
@@ -2496,6 +2619,67 @@ mod tests {
             Some(Provider::Claude)
         );
         assert_eq!(Provider::from_url("https://example.com"), None);
+        assert_eq!(
+            Provider::from_url("https://example.com/?next=https://chatgpt.com/c/abc"),
+            None
+        );
+        assert_eq!(Provider::from_url("http://chatgpt.com/c/abc"), None);
+    }
+
+    #[test]
+    fn resolves_session_ids_for_each_provider() {
+        assert_eq!(
+            resolve_session_target(Provider::ChatGpt, true, "chat-123").unwrap(),
+            (
+                Provider::ChatGpt,
+                "https://chatgpt.com/c/chat-123".to_string()
+            )
+        );
+        assert_eq!(
+            resolve_session_target(Provider::Gemini, true, "gemini_123").unwrap(),
+            (
+                Provider::Gemini,
+                "https://gemini.google.com/app/gemini_123".to_string()
+            )
+        );
+        assert_eq!(
+            resolve_session_target(Provider::Claude, true, "claude-123").unwrap(),
+            (
+                Provider::Claude,
+                "https://claude.ai/chat/claude-123".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn session_url_infers_provider_unless_cli_provider_conflicts() {
+        let target =
+            resolve_session_target(Provider::Gemini, false, "https://chatgpt.com/c/chat-123")
+                .unwrap();
+        assert_eq!(target.0, Provider::ChatGpt);
+        assert_eq!(target.1, "https://chatgpt.com/c/chat-123");
+
+        let error =
+            resolve_session_target(Provider::Gemini, true, "https://chatgpt.com/c/chat-123")
+                .unwrap_err();
+        assert!(error.contains("but --provider selected Gemini"));
+    }
+
+    #[test]
+    fn rejects_invalid_session_urls_and_ids() {
+        for invalid in [
+            "https://example.com/c/chat-123",
+            "https://chatgpt.com/",
+            "https://gemini.google.com/app",
+            "https://claude.ai/chat/",
+            "../chat-123",
+            "chat/123",
+        ] {
+            assert!(
+                resolve_session_target(Provider::ChatGpt, false, invalid).is_err(),
+                "expected {invalid:?} to be rejected"
+            );
+        }
     }
 
     #[test]
@@ -3360,11 +3544,11 @@ fn open_url_tab(
         .and_then(|t| t.as_str())
         .ok_or_else(|| format!("Invalid list_pages response structure: {:?}", list_res))?;
 
-    let pages = parse_pages(text);
-    if pages.len() == 1
-        && (pages[0].url == "about:blank"
-            || pages[0].url.contains("new-tab-page")
-            || pages[0].url.contains("chrome://welcome"))
+    let pages_before = parse_pages(text);
+    let target_page_id = if pages_before.len() == 1
+        && (pages_before[0].url == "about:blank"
+            || pages_before[0].url.contains("new-tab-page")
+            || pages_before[0].url.contains("chrome://welcome"))
     {
         call_mcp_tool(
             config_path,
@@ -3373,6 +3557,7 @@ fn open_url_tab(
                 "url": url
             }),
         )?;
+        pages_before[0].id
     } else {
         call_mcp_tool(
             config_path,
@@ -3381,9 +3566,6 @@ fn open_url_tab(
                 "url": url
             }),
         )?;
-    }
-
-    for _ in 0..20 {
         let refreshed_pages_res = call_mcp_tool(config_path, "list_pages", serde_json::json!({}))?;
         let refreshed_text = refreshed_pages_res
             .get("content")
@@ -3397,34 +3579,18 @@ fn open_url_tab(
                     refreshed_pages_res
                 )
             })?;
-
         let refreshed_pages = parse_pages(refreshed_text);
-        if let Some(page) = refreshed_pages.iter().find(|page| page.url == url) {
-            call_mcp_tool(
-                config_path,
-                "select_page",
-                serde_json::json!({
-                    "pageId": page.id,
-                    "bringToFront": !headless
-                }),
-            )?;
+        unique_new_page_id(&pages_before, &refreshed_pages)?
+    };
 
-            for stale_page in refreshed_pages.iter().filter(|p| p.id != page.id) {
-                let _ = call_mcp_tool(
-                    config_path,
-                    "close_page",
-                    serde_json::json!({
-                        "pageId": stale_page.id
-                    }),
-                );
-            }
-
-            let page_provider = Provider::from_url(url).unwrap_or(provider);
-            return wait_for_page_load(config_path, page_provider, verbose);
-        }
-
-        thread::sleep(Duration::from_millis(250));
-    }
+    call_mcp_tool(
+        config_path,
+        "select_page",
+        serde_json::json!({
+            "pageId": target_page_id,
+            "bringToFront": !headless
+        }),
+    )?;
 
     let page_provider = Provider::from_url(url).unwrap_or(provider);
     wait_for_page_load(config_path, page_provider, verbose)
@@ -5561,12 +5727,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let provider = match resolve_provider(cli.provider) {
+    let mut provider = match resolve_provider(cli.provider) {
         Ok(provider) => provider,
         Err(e) => {
             eprintln!("Error: {}", e);
             std::process::exit(1);
         }
+    };
+
+    let session_target = match cli.session.as_deref() {
+        Some(session) => match resolve_session_target(provider, cli.provider.is_some(), session) {
+            Ok(target) => {
+                provider = target.0;
+                Some(target)
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        },
+        None => None,
     };
 
     if let Err(e) = validate_provider_feature_support(provider, &cli) {
@@ -5902,7 +6082,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(0);
     }
 
-    if let Err(e) = ensure_provider_tab(
+    if let Some((session_provider, session_url)) = &session_target {
+        if let Err(e) = open_url_tab(
+            &config_path,
+            *session_provider,
+            session_url,
+            is_headless,
+            command_verbose,
+        ) {
+            eprintln!(
+                "Error opening {} session: {}",
+                session_provider.display_name(),
+                e
+            );
+            std::process::exit(1);
+        }
+    } else if let Err(e) = ensure_provider_tab(
         &config_path,
         provider,
         cli.new,

@@ -38,6 +38,7 @@
 - **Pipe 與 stdin 支援**：支援透過 standard input 傳入 prompt，例如 `cat report.txt | ask-bridge "summarize this"`。
 - **圖片與文件上傳**：可透過 `--image` 附上圖片（支援 ChatGPT 與 Claude），或透過 `--file` 附上文件（PDF、Word、Excel、純文字、Markdown、JSON 等皆可），一次可指定多個檔案；Gemini 目前支援 `--file`，不支援 `--image` 圖片輸入。
 - **模型切換**：使用 `--model` 在送出 prompt 前自動切換 provider 模型（如 ChatGPT 的 `GPT-5.4`、`o3`，Gemini 的 `3.5 Flash`、`3.1 Pro`，或 Claude 的 `Sonnet`、`Opus`）。
+- **接續既有對話**：使用 `--session`、`--session-id` 或 `--session-url` 指定既有對話，再從終端機送出新的 prompt。
 - **回應超時**：使用 `--timeout <秒數>` 設定等待回應上限，預設為 `300` 秒。
 - **預設安靜模式與 verbose 模式**：預設只輸出最終回覆；加上 `--verbose` 可顯示背景瀏覽器控制流程。
 - **版本資訊**：使用 `-v` 或 `--version` 顯示目前版本號。
@@ -205,7 +206,22 @@ ask-bridge "誰是保哥？" --new
 分頁與其他網站分頁都會保留；若無法唯一辨識新分頁，命令會停止且不會改用
 或關閉既有分頁。
 
-### 4. Headless 模式
+### 4. 接續既有對話
+
+使用 provider 對話 ID 或完整對話 URL，可接續網頁端既有的對話脈絡：
+
+```bash
+ask-bridge --provider chatgpt --session-id "conversation-uuid" "請接續先前的規劃。"
+ask-bridge --session-url "https://chatgpt.com/c/conversation-uuid" "請產出下一步計畫。"
+ask-bridge --provider gemini --session "conversation-id" "請繼續分析。"
+```
+
+`--session`、`--session-id` 與 `--session-url` 是相同參數的別名。傳入 ID
+時會依 `--provider` 或全域設定組成 provider 對話 URL；傳入完整 URL 時會辨識
+provider。若同時明確指定不相符的 `--provider`、URL 不屬於支援的 provider，
+或與 `--new` 同時使用，命令會在開啟瀏覽器前停止。既有頁籤不會被關閉。
+
+### 5. Headless 模式
 
 一般提問預設使用 headless Chrome，也就是 `--headless=true`。Chrome 會在背景執行，不會搶走焦點或跳出視窗。
 
@@ -217,7 +233,7 @@ ask-bridge "誰是保哥？" --headless=false
 
 `ask-bridge login` 會強制使用 headful 模式，方便你和瀏覽器 UI 互動；其他 subcommand 若要可見瀏覽器，請明確加上 `--headless=false`。
 
-### 5. Verbose 模式
+### 6. Verbose 模式
 
 預設情況下，`ask-bridge` 只輸出所選 provider 的最終回覆，隱藏背景控制訊息。
 
@@ -235,7 +251,7 @@ Verbose 模式會顯示類似以下流程：
 - 送出訊息。
 - 等待 provider 回覆。
 
-### 6. 回應超時（`--timeout`）
+### 7. 回應超時（`--timeout`）
 
 回答等待預設 300 秒，若 provider 回應時間較長可提高（或降低）等待上限：
 
@@ -251,7 +267,7 @@ ask-bridge "簡短回覆" --timeout 60
 
 超過設定秒數仍未完成時，會輸出超時警告並直接結束回應等待流程。
 
-### 7. 顯示版本
+### 8. 顯示版本
 
 使用 `-v` 或 `--version` 顯示目前版本號：
 
@@ -259,7 +275,7 @@ ask-bridge "簡短回覆" --timeout 60
 ask-bridge -v
 ```
 
-### 8. Pipe 與 stdin
+### 9. Pipe 與 stdin
 
 可透過 pipe 將文字或檔案內容傳入 `ask-bridge`：
 
@@ -279,7 +295,7 @@ cat /Users/will/.copilot/session-state/46cc0f1c-79fd-4622-9548-a0b7fa3794be/rese
 cat src/main.rs | ask-bridge "這段 Rust code 有記憶體洩漏風險嗎？"
 ```
 
-### 8. 附上圖片或文件
+### 10. 附上圖片或文件
 
 除了把檔案內容透過 pipe 傳入 prompt，你也可以直接把本機檔案當作附件上傳給所選 provider。
 
@@ -315,7 +331,7 @@ ask-bridge "請對照這張設計圖與規格文件，指出不一致的地方�
 
 provider 回覆後，可使用 `-i` / `--image-output` 指定生成圖片的下載路徑（資料夾或檔案路徑）。
 
-### 9. 切換模型
+### 11. 切換模型
 
 使用 `--model` 在送出 prompt 前自動切換 provider 的模型。比對時不分大小寫與標點符號（`-`、`.`、空格 等）。
 
@@ -338,7 +354,7 @@ ask-bridge --provider claude "證明這個數學問題。" --model Opus
 
 > 若指定的名稱在選單中找不到，`ask-bridge` 會回報 `Model switch failed: error: model not found in menu` 並中止，不會送出 prompt。
 
-### 10. 只開啟 provider
+### 12. 只開啟 provider
 
 若只想快速開啟瀏覽器並進入所選 provider：
 
@@ -348,7 +364,7 @@ ask-bridge --provider gemini open
 ask-bridge --provider claude open
 ```
 
-### 11. 關閉瀏覽器 instance
+### 13. 關閉瀏覽器 instance
 
 若要關閉 `ask-bridge` 管理的 Chrome debug profile instance：
 
@@ -358,7 +374,7 @@ ask-bridge close
 
 `close` 只會關閉使用 `~/.config/ask-bridge/chrome-profile` 且監聽 debug port `9223` 的 `ask-bridge` Chrome instance；若該 port 被非 `ask-bridge` Chrome 程序占用，會回報錯誤而不會關閉它。
 
-### 12. 更新 ask-bridge
+### 14. 更新 ask-bridge
 
 若要直接自動更新目前安裝的 `ask-bridge`，可直接執行：
 

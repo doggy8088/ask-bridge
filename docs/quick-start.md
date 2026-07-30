@@ -111,6 +111,23 @@ ask-bridge "開始一個關於 async Rust 的新主題。" --new
 `--new` 會開啟新的所選 provider 對話，而不是重用既有的同 provider 分頁。
 執行前已存在的所有頁籤都會保留；若無法唯一辨識新分頁，命令會停止。
 
+## 接續既有 provider 對話
+
+使用對話 ID：
+
+```sh
+ask-bridge --provider chatgpt --session-id "conversation-uuid" "請接續先前的規劃。"
+```
+
+或直接使用完整對話 URL：
+
+```sh
+ask-bridge --session-url "https://chatgpt.com/c/conversation-uuid" "請產出下一步計畫。"
+```
+
+`--session`、`--session-id` 與 `--session-url` 是相同參數的別名，不能與
+`--new` 同時使用。完整 URL 會自動辨識 provider；既有頁籤都會保留。
+
 ## 透過 pipe 傳入內容
 
 執行：
