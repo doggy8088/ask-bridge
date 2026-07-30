@@ -49,6 +49,23 @@ jobs:
           if (!(Test-Path $updateBinary)) {
             throw "Missing updater binary: $updateBinary"
           }
+          if ("${{ runner.os }}" -eq "Windows") {
+            $stream = [System.IO.File]::OpenRead($binary)
+            try {
+              $firstByte = $stream.ReadByte()
+              $secondByte = $stream.ReadByte()
+            } finally {
+              $stream.Dispose()
+            }
+            if ($firstByte -ne 0x4D -or $secondByte -ne 0x5A) {
+              throw "Windows release binary is not a PE executable (missing MZ header)"
+            }
+          }
+
+          $versionOutput = & $binary --version
+          if ($LASTEXITCODE -ne 0 -or "$versionOutput" -notmatch '^ask-bridge\s+\d+\.\d+\.\d+') {
+            throw "Release binary failed version smoke test: $versionOutput"
+          }
 
           New-Item -ItemType Directory -Force dist | Out-Null
           $archive = "dist/ask-bridge-${{ matrix.target }}.${{ matrix.ext }}"

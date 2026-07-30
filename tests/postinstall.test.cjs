@@ -12,6 +12,7 @@ const {
   platformKey,
   releaseBaseUrl,
   sha256,
+  verifyBinaryFormat,
   verifyChecksum,
 } = require('../npm/postinstall.cjs');
 
@@ -40,4 +41,28 @@ test('verifies sha256 checksums', () => {
   const digest = sha256(file);
   verifyChecksum(file, `${digest}  sample.txt`);
   assert.throws(() => verifyChecksum(file, '0'.repeat(64)), /Checksum mismatch/);
+});
+
+test('verifies native binary formats before installation', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ask-bridge-format-'));
+  const windowsBinary = join(dir, 'ask-bridge.exe');
+  const linuxBinary = join(dir, 'ask-bridge-linux');
+  const macBinary = join(dir, 'ask-bridge-macos');
+
+  writeFileSync(windowsBinary, Buffer.from([0x4d, 0x5a, 0x90, 0x00]));
+  writeFileSync(linuxBinary, Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
+  writeFileSync(macBinary, Buffer.from([0xcf, 0xfa, 0xed, 0xfe]));
+
+  verifyBinaryFormat(windowsBinary, 'win32');
+  verifyBinaryFormat(linuxBinary, 'linux');
+  verifyBinaryFormat(macBinary, 'darwin');
+
+  assert.throws(
+    () => verifyBinaryFormat(macBinary, 'win32'),
+    /binary format does not match win32/,
+  );
+  assert.throws(
+    () => verifyBinaryFormat(windowsBinary, 'darwin'),
+    /binary format does not match darwin/,
+  );
 });

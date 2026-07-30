@@ -91,6 +91,10 @@ irm https://raw.githubusercontent.com/doggy8088/ask-bridge/main/install.ps1 | ie
 > [!NOTE]
 > Make sure the installation path (`~/.local/bin` for macOS/Linux, and `$HOME\.local\bin` for Windows) is added to your system's `PATH` environment variable.
 > The formal CLI command is `ask-bridge`; the installer also provides `ask` as a backward-compatible alias. The examples below use `ask-bridge`.
+> The Windows installer verifies that the download is a PE executable, runs a
+> `--version` smoke test, and puts the official install directory first in User
+> PATH. Run `where.exe ask-bridge` and confirm that the first result is
+> `$HOME\.local\bin\ask-bridge.exe`.
 
 ### 2. Build & Install from Source (For Developers)
 

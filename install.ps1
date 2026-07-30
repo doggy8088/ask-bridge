@@ -122,6 +122,80 @@ function Copy-ItemWithRetry {
     }
 }
 
+function Assert-WindowsExecutable {
+    param(
+        [Parameter(Mandatory)] [string] $Path
+    )
+
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $firstByte = $stream.ReadByte()
+        $secondByte = $stream.ReadByte()
+    } finally {
+        $stream.Dispose()
+    }
+
+    if ($firstByte -ne 0x4D -or $secondByte -ne 0x5A) {
+        throw "Binary '$Path' is not a Windows PE executable (missing MZ header). Refusing to install a mismatched platform artifact."
+    }
+}
+
+function Confirm-AskBridgeBinary {
+    param(
+        [Parameter(Mandatory)] [string] $Path
+    )
+
+    Assert-WindowsExecutable -Path $Path
+    $versionOutput = & $Path --version 2>&1
+    $versionExitCode = $LASTEXITCODE
+    $versionText = ($versionOutput | Out-String).Trim()
+    if ($versionExitCode -ne 0) {
+        throw "Installed ask-bridge binary failed its version check with exit code $versionExitCode`: $versionText"
+    }
+    if ($versionText -notmatch '^ask-bridge\s+\d+\.\d+\.\d+') {
+        throw "Installed ask-bridge binary returned unexpected version output: '$versionText'"
+    }
+}
+
+function Set-AskBridgePathPriority {
+    param(
+        [Parameter(Mandatory)] [string] $InstallDir
+    )
+
+    $installKey = $InstallDir.Trim().TrimEnd([char[]]"\/")
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $userEntries = @(
+        $userPath -split ';' |
+            Where-Object {
+                $_ -and $_.Trim().TrimEnd([char[]]"\/") -ine $installKey
+            }
+    )
+    $newUserPath = (@($InstallDir) + $userEntries) -join ';'
+    [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
+
+    $processEntries = @(
+        $env:Path -split ';' |
+            Where-Object {
+                $_ -and $_.Trim().TrimEnd([char[]]"\/") -ine $installKey
+            }
+    )
+    $env:Path = (@($InstallDir) + $processEntries) -join ';'
+}
+
+function Confirm-AskBridgeCommandResolution {
+    param(
+        [Parameter(Mandatory)] [string] $ExpectedPath
+    )
+
+    $resolved = Get-Command ask-bridge.exe -CommandType Application -ErrorAction Stop |
+        Select-Object -First 1
+    $resolvedPath = [System.IO.Path]::GetFullPath($resolved.Source)
+    $expectedFullPath = [System.IO.Path]::GetFullPath($ExpectedPath)
+    if ($resolvedPath -ine $expectedFullPath) {
+        throw "The 'ask-bridge' command resolves to '$resolvedPath' instead of the newly installed '$expectedFullPath'."
+    }
+}
+
 # 1. Check Node.js and npx
 $nodeCheck = Get-Command node -ErrorAction SilentlyContinue
 $npxCheck = Get-Command npx -ErrorAction SilentlyContinue
@@ -229,6 +303,8 @@ if ($Local) {
         Write-Error "Local updater binary not found at '$LocalUpdatePath'. Check repository permissions and build output path."
         exit 1
     }
+    Assert-WindowsExecutable -Path $LocalPath
+    Assert-WindowsExecutable -Path $LocalUpdatePath
 
     $InstallDir = Join-Path $HOME ".local\bin"
     if (-not (Test-Path $InstallDir)) {
@@ -245,21 +321,10 @@ if ($Local) {
     Copy-ItemWithRetry -Source $ResolvedLocalPath -Destination $AliasPath
     Copy-ItemWithRetry -Source $ResolvedLocalUpdatePath -Destination $UpdatePath
 
-    $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    $CleanPathList = $UserPath -split ';'
-
-    if ($CleanPathList -notcontains $InstallDir) {
-        Write-Host "Adding $InstallDir to User PATH..." -ForegroundColor Cyan
-        $NewPath = $UserPath
-        if ($NewPath -and -not $NewPath.EndsWith(';')) {
-            $NewPath += ";"
-        }
-        $NewPath += $InstallDir
-        [Environment]::SetEnvironmentVariable("Path", $NewPath, "User")
-        
-        $env:Path = $env:Path + ";" + $InstallDir
-        Write-Host "Successfully added to PATH. You may need to restart your terminal to apply." -ForegroundColor Green
-    }
+    Confirm-AskBridgeBinary -Path $DestPath
+    Write-Host "Putting $InstallDir first in User PATH..." -ForegroundColor Cyan
+    Set-AskBridgePathPriority -InstallDir $InstallDir
+    Confirm-AskBridgeCommandResolution -ExpectedPath $DestPath
 
     Write-Host "Successfully installed! You can now use the 'ask-bridge' command. The 'ask' alias is also available." -ForegroundColor Green
     exit 0
@@ -301,6 +366,10 @@ try {
         exit 1
     }
     $UpdateExePath = Get-ChildItem -Path $TempDir -Recurse -Filter "ask-bridge-update.exe" | Select-Object -First 1
+    Assert-WindowsExecutable -Path $ExePath.FullName
+    if ($UpdateExePath) {
+        Assert-WindowsExecutable -Path $UpdateExePath.FullName
+    }
 
     # Copy to destination as ask-bridge.exe and keep ask.exe as an alias.
     $DestPath = Join-Path $InstallDir "ask-bridge.exe"
@@ -316,6 +385,7 @@ try {
     } else {
         Write-Host "Warning: ask-bridge-update.exe not found in archive; update helper unavailable." -ForegroundColor Yellow
     }
+    Confirm-AskBridgeBinary -Path $DestPath
 }
 finally {
     # Clean up temp
@@ -324,22 +394,9 @@ finally {
     }
 }
 
-# 7. Check/Add to PATH
-$UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-$CleanPathList = $UserPath -split ';'
-
-if ($CleanPathList -notcontains $InstallDir) {
-    Write-Host "Adding $InstallDir to User PATH..." -ForegroundColor Cyan
-    $NewPath = $UserPath
-    if ($NewPath -and -not $NewPath.EndsWith(';')) {
-        $NewPath += ";"
-    }
-    $NewPath += $InstallDir
-    [Environment]::SetEnvironmentVariable("Path", $NewPath, "User")
-    
-    # Update current session path
-    $env:Path = $env:Path + ";" + $InstallDir
-    Write-Host "Successfully added to PATH. You may need to restart your terminal to apply." -ForegroundColor Green
-}
+# 7. Put the verified installation first in PATH and ensure command resolution.
+Write-Host "Putting $InstallDir first in User PATH..." -ForegroundColor Cyan
+Set-AskBridgePathPriority -InstallDir $InstallDir
+Confirm-AskBridgeCommandResolution -ExpectedPath $DestPath
 
 Write-Host "Successfully installed! You can now use the 'ask-bridge' command. The 'ask' alias is also available." -ForegroundColor Green

@@ -44,6 +44,17 @@ Node.js 必須符合 `^20.19.0`、`^22.12.0` 或 `>=23.0.0`。執行瀏覽器操
 
 若找不到 `ask-bridge`，在 ask-bridge 專案中可先使用既有安裝流程、`cargo run --bin ask-bridge --`，或建置後的 `target/release/ask-bridge`；不要臆測使用者環境已完成設定。
 
+在 Windows 安裝或更新後，額外確認實際命令來源：
+
+```powershell
+where.exe ask-bridge
+ask-bridge --version
+```
+
+第一筆路徑應為 `$HOME\.local\bin\ask-bridge.exe`。若其他舊命令排在前面，
+重新執行官方 `install.ps1`；安裝程式會驗證 Windows PE 格式與版本輸出，
+並將正式安裝目錄移到 User PATH 最前面。
+
 ## 全域設定檔
 
 `ask-bridge` 會讀取全域設定檔：

@@ -86,6 +86,9 @@ irm https://raw.githubusercontent.com/doggy8088/ask-bridge/main/install.ps1 | ie
 > [!NOTE]
 > 請確保安裝路徑（macOS/Linux 為 `~/.local/bin`；Windows 為 `$HOME\.local\bin`）已加入您的系統 `PATH` 環境變數中。
 > 正式 CLI 命令為 `ask-bridge`；安裝流程也會提供 `ask` 作為向後相容 alias。以下範例皆以 `ask-bridge` 為準。
+> Windows 安裝程式會驗證下載檔為 PE 執行檔、執行 `--version` smoke test，
+> 並把正式安裝目錄放在 User PATH 最前面。可用 `where.exe ask-bridge`
+> 確認第一筆結果為 `$HOME\.local\bin\ask-bridge.exe`。
 
 ### 2. 從原始碼建置與安裝 (適用於開發者)
 
