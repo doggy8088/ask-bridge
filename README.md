@@ -37,7 +37,7 @@
 - **智慧分頁管理**：可重用既有 provider 分頁、聚焦分頁，或開啟新分頁，避免分頁過度增加。
 - **Pipe 與 stdin 支援**：支援透過 standard input 傳入 prompt，例如 `cat report.txt | ask-bridge "summarize this"`。
 - **圖片與文件上傳**：可透過 `--image` 附上圖片（支援 ChatGPT 與 Claude），或透過 `--file` 附上文件（PDF、Word、Excel、純文字、Markdown、JSON 等皆可），一次可指定多個檔案；Gemini 目前支援 `--file`，不支援 `--image` 圖片輸入。
-- **模型切換**：使用 `--model` 在送出 prompt 前自動切換 provider 模型（如 ChatGPT 的 `GPT-5.4`、`o3`，Gemini 的 `3.5 Flash`、`3.1 Pro`，或 Claude 的 `Sonnet`、`Opus`）。
+- **模型與推理模式切換**：使用 `--model` 選模型，並以 `--reasoning` 分別控制 ChatGPT 推理強度或 Gemini 延伸思考。
 - **接續既有對話**：使用 `--session`、`--session-id` 或 `--session-url` 指定既有對話，再從終端機送出新的 prompt。
 - **回應超時**：使用 `--timeout <秒數>` 設定等待回應上限，預設為 `300` 秒。
 - **預設安靜模式與 verbose 模式**：預設只輸出最終回覆；加上 `--verbose` 可顯示背景瀏覽器控制流程。
@@ -334,28 +334,27 @@ ask-bridge "請對照這張設計圖與規格文件，指出不一致的地方�
 
 provider 回覆後，可使用 `-i` / `--image-output` 指定生成圖片的下載路徑（資料夾或檔案路徑）。
 
-### 11. 切換模型
+### 11. 切換模型與推理模式
 
-使用 `--model` 在送出 prompt 前自動切換 provider 的模型。比對時不分大小寫與標點符號（`-`、`.`、空格 等）。
+使用 `--model` 在送出 prompt 前切換 provider 模型；使用 `--reasoning` 分別指定 provider 支援的推理模式。兩者可在同一次 ChatGPT 呼叫中併用；Gemini 的延伸思考只相容於 Pro 模型。
 
 ```bash
-ask-bridge "用幾句話介紹 Rust。" --model GPT-5.4
-ask-bridge "證明這個數學問題。" --model o3
-ask-bridge "快速翻譯這段話。" --model 即時
-ask-bridge --provider gemini "用幾句話介紹 Rust。" --model "3.5 Flash"
-ask-bridge --provider gemini "用幾句話介紹 Rust。" --model "3.1 Pro"
+ask-bridge "證明這個數學問題。" --model "GPT-5.6 Sol" --reasoning high
+ask-bridge "快速翻譯這段話。" --reasoning instant
+ask-bridge --provider gemini "用幾句話介紹 Rust。" --model "3.6 Flash"
+ask-bridge --provider gemini "證明這個數學問題。" --model "3.1 Pro" --reasoning extended
 ask-bridge --provider claude "用幾句話介紹 Rust。" --model Sonnet
-ask-bridge --provider claude "證明這個數學問題。" --model Opus
 ```
 
-可用的模型名稱（視帳號權限與 provider UI 而定）：
+參數規則：
 
-- **ChatGPT 模型**：`GPT-5.5`、`GPT-5.4`、`GPT-5.3`、`o3`
-- **ChatGPT 思考強度**：`智慧`、`即時`、`中等`、`高`、`超高`、`專業`
-- **Gemini 模式**：`3.5 Flash`、`3.1 Flash-Lite`、`3.1 Pro`
-- **Claude 模型**：`Sonnet`、`Opus`、`Haiku`（實際名稱依 claude.ai 選單與帳號方案而定）
+- **ChatGPT**：`--reasoning` 支援 `auto`、`instant`、`medium`、`high`，也接受 `智慧`、`即時`、`中`、`中等`、`高` 等對應別名。
+- **Gemini**：`--reasoning extended` 選擇 Extended Thinking；可省略 `--model`，或搭配實際存在的 Pro 模型。
+- **Claude**：不支援 `--reasoning`；`--model` 的 Sonnet、Opus、Haiku 選擇流程維持不變。
 
-> 若指定的名稱在選單中找不到，`ask-bridge` 會回報 `Model switch failed: error: model not found in menu` 並中止，不會送出 prompt。
+模型比對只使用選單的主標籤，忽略副標題與 badge；比對仍不分大小寫與標點。工具不會把舊版模型名稱自動改選為其他版本。若主標籤不存在，錯誤會列出目前讀到的 provider 選項，並在送出 prompt 前中止。
+
+舊用法如 `--model 高` 或 Gemini 的 `--model 延伸思考` 暫時仍可使用，但會顯示棄用警告；請改用 `--reasoning`。
 
 ### 12. 只開啟 provider
 

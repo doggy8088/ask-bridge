@@ -169,24 +169,25 @@ ask-bridge "幫我檢查這段程式碼。" --file src/main.rs
 ask-bridge "對照這張設計圖與規格文件，指出不一致處。" --image design.png --file spec.docx
 ```
 
-## 切換模型
+## 切換模型與推理模式
 
-使用 `--model` 在送出 prompt 前自動切換 provider 模型（不分大小寫與標點）：
+使用 `--model` 切換 provider 模型，並以 `--reasoning` 分別指定 ChatGPT 推理強度或 Gemini 延伸思考：
 
 ```sh
-ask-bridge "用幾句話介紹 Rust。" --model GPT-5.4
-ask-bridge "證明這個數學問題。" --model o3
-ask-bridge "快速翻譯這段話。" --model 即時
-ask-bridge --provider gemini "用幾句話介紹 Rust。" --model "3.5 Flash"
+ask-bridge "證明這個數學問題。" --model "GPT-5.6 Sol" --reasoning high
+ask-bridge "快速翻譯這段話。" --reasoning instant
+ask-bridge --provider gemini "用幾句話介紹 Rust。" --model "3.6 Flash"
+ask-bridge --provider gemini "證明這個數學問題。" --model "3.1 Pro" --reasoning extended
 ask-bridge --provider claude "用幾句話介紹 Rust。" --model Sonnet
 ```
 
-可用名稱（視帳號權限與 provider UI）：
+推理值：
 
-- **ChatGPT 模型**：`GPT-5.5`、`GPT-5.4`、`GPT-5.3`、`o3`
-- **ChatGPT 思考強度**：`智慧`、`即時`、`中等`、`高`、`超高`、`專業`
-- **Gemini 模式**：`3.5 Flash`、`3.1 Flash-Lite`、`3.1 Pro`
-- **Claude 模型**：`Sonnet`、`Opus`、`Haiku`（實際名稱依 claude.ai 選單與帳號方案而定）
+- **ChatGPT**：`auto`、`instant`、`medium`、`high`，亦接受對應中文別名。
+- **Gemini**：`extended`，只能單獨使用或搭配 Pro 模型。
+- **Claude**：不支援 `--reasoning`，原有 `--model` 行為不變。
+
+模型名稱會與 provider 選單的主標籤精確比對，不會把舊版本名稱改選為其他版本；副標題與 badge 不參與比對。
 
 ## 關閉瀏覽器 instance
 

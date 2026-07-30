@@ -420,6 +420,153 @@ impl fmt::Display for Provider {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReasoningRequest {
+    ChatGptAuto,
+    ChatGptInstant,
+    ChatGptMedium,
+    ChatGptHigh,
+    GeminiExtended,
+}
+
+impl ReasoningRequest {
+    fn target_aliases(self) -> &'static [&'static str] {
+        match self {
+            ReasoningRequest::ChatGptAuto => &["auto", "自動", "智慧"],
+            ReasoningRequest::ChatGptInstant => &["instant", "即時"],
+            ReasoningRequest::ChatGptMedium => &["medium", "中", "中等"],
+            ReasoningRequest::ChatGptHigh => &["high", "高"],
+            ReasoningRequest::GeminiExtended => &["extended thinking", "延伸思考"],
+        }
+    }
+
+    fn verification_aliases(self) -> &'static [&'static str] {
+        match self {
+            ReasoningRequest::GeminiExtended => {
+                &["extended thinking", "延伸思考", "pro extended", "pro 延伸"]
+            }
+            _ => self.target_aliases(),
+        }
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct SelectionPlan {
+    model: Option<String>,
+    reasoning: Option<ReasoningRequest>,
+    used_legacy_model: bool,
+}
+
+fn normalize_option_label(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(char::to_lowercase)
+        .filter(|character| character.is_alphanumeric())
+        .collect()
+}
+
+fn parse_chatgpt_reasoning(value: &str) -> Option<ReasoningRequest> {
+    match normalize_option_label(value).as_str() {
+        "auto" | "自動" | "智慧" => Some(ReasoningRequest::ChatGptAuto),
+        "instant" | "即時" => Some(ReasoningRequest::ChatGptInstant),
+        "medium" | "中" | "中等" => Some(ReasoningRequest::ChatGptMedium),
+        "high" | "高" => Some(ReasoningRequest::ChatGptHigh),
+        _ => None,
+    }
+}
+
+fn parse_gemini_reasoning(value: &str) -> Option<ReasoningRequest> {
+    match normalize_option_label(value).as_str() {
+        "extended" | "extendedthinking" | "延伸思考" | "proextended" | "pro延伸" => {
+            Some(ReasoningRequest::GeminiExtended)
+        }
+        _ => None,
+    }
+}
+
+fn is_gemini_pro_model(model: &str) -> bool {
+    let normalized = normalize_option_label(model);
+    if normalized == "pro" {
+        return true;
+    }
+
+    normalized.strip_suffix("pro").is_some_and(|version| {
+        !version.is_empty() && version.chars().all(|character| character.is_ascii_digit())
+    })
+}
+
+fn resolve_selection_plan(
+    provider: Provider,
+    model: Option<&str>,
+    reasoning: Option<&str>,
+) -> Result<SelectionPlan, String> {
+    let raw_model = model.map(str::trim);
+    if raw_model == Some("") {
+        return Err("Empty model name".to_string());
+    }
+    let model = raw_model.map(str::to_string);
+
+    let raw_reasoning = reasoning.map(str::trim);
+    if raw_reasoning == Some("") {
+        return Err("Empty reasoning value".to_string());
+    }
+
+    let explicit_reasoning = match (provider, raw_reasoning) {
+        (_, None) => None,
+        (Provider::ChatGpt, Some(value)) => Some(parse_chatgpt_reasoning(value).ok_or_else(|| {
+            format!(
+                "Unsupported ChatGPT reasoning '{value}'. Supported values: auto, instant, medium, high"
+            )
+        })?),
+        (Provider::Gemini, Some(value)) => Some(parse_gemini_reasoning(value).ok_or_else(|| {
+            format!("Unsupported Gemini reasoning '{value}'. Supported value: extended")
+        })?),
+        (Provider::Claude, Some(_)) => {
+            return Err(
+                "Claude does not support --reasoning; use --model for Sonnet, Opus, or Haiku"
+                    .to_string(),
+            );
+        }
+    };
+
+    let legacy_reasoning = match (provider, model.as_deref()) {
+        (Provider::ChatGpt, Some(value)) => parse_chatgpt_reasoning(value),
+        (Provider::Gemini, Some(value)) => parse_gemini_reasoning(value),
+        (Provider::Claude, _) | (_, None) => None,
+    };
+
+    if explicit_reasoning.is_some() && legacy_reasoning.is_some() {
+        return Err(
+            "A reasoning-like --model value cannot be combined with --reasoning; move the reasoning value to --reasoning"
+                .to_string(),
+        );
+    }
+
+    let (model, reasoning, used_legacy_model) = if let Some(legacy) = legacy_reasoning {
+        (None, Some(legacy), true)
+    } else {
+        (model, explicit_reasoning, false)
+    };
+
+    if provider == Provider::Gemini
+        && reasoning == Some(ReasoningRequest::GeminiExtended)
+        && model
+            .as_deref()
+            .is_some_and(|value| !is_gemini_pro_model(value))
+    {
+        return Err(
+            "Gemini Extended Thinking is incompatible with non-Pro models; omit --model or select a Pro model"
+                .to_string(),
+        );
+    }
+
+    Ok(SelectionPlan {
+        model,
+        reasoning,
+        used_legacy_model,
+    })
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct ChatGptAgentPrompt<'a> {
     agent_mention: &'a str,
@@ -526,12 +673,14 @@ struct Cli {
     timeout: u64,
 
     /// Switch the provider model before sending the prompt.
-    /// ChatGPT examples: "GPT-5.5", "GPT-5.4", "GPT-5.3", "o3", or thinking levels such as
-    /// "即時", "中等", "高", "超高", "專業", "智慧". Gemini examples: "3.5 Flash",
-    /// "3.1 Flash-Lite", or "3.1 Pro". Claude examples: "Sonnet", "Opus", "Haiku".
-    /// Matching is case- and punctuation-insensitive.
+    /// Use the exact primary menu label; subtitles and badges are ignored.
     #[arg(long = "model", value_name = "MODEL")]
     model: Option<String>,
+
+    /// Select provider-specific reasoning separately from the model.
+    /// ChatGPT: auto, instant, medium, high. Gemini: extended. Claude: unsupported.
+    #[arg(long = "reasoning", value_name = "REASONING")]
+    reasoning: Option<String>,
 }
 
 #[derive(Subcommand, Clone)]
@@ -2795,6 +2944,120 @@ mod tests {
     }
 
     #[test]
+    fn parses_reasoning_cli_argument() {
+        let cli = Cli::try_parse_from([
+            "ask-bridge",
+            "--provider",
+            "chatgpt",
+            "--model",
+            "GPT-5.6 Sol",
+            "--reasoning",
+            "high",
+            "solve",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.model.as_deref(), Some("GPT-5.6 Sol"));
+        assert_eq!(cli.reasoning.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn resolves_chatgpt_model_and_reasoning_independently() {
+        let plan =
+            resolve_selection_plan(Provider::ChatGpt, Some("GPT-5.6 Sol"), Some("medium")).unwrap();
+
+        assert_eq!(plan.model.as_deref(), Some("GPT-5.6 Sol"));
+        assert_eq!(plan.reasoning, Some(ReasoningRequest::ChatGptMedium));
+        assert!(!plan.used_legacy_model);
+    }
+
+    #[test]
+    fn resolves_chatgpt_reasoning_aliases() {
+        for (value, expected) in [
+            ("auto", ReasoningRequest::ChatGptAuto),
+            ("自動", ReasoningRequest::ChatGptAuto),
+            ("智慧", ReasoningRequest::ChatGptAuto),
+            ("instant", ReasoningRequest::ChatGptInstant),
+            ("即時", ReasoningRequest::ChatGptInstant),
+            ("medium", ReasoningRequest::ChatGptMedium),
+            ("中", ReasoningRequest::ChatGptMedium),
+            ("中等", ReasoningRequest::ChatGptMedium),
+            ("high", ReasoningRequest::ChatGptHigh),
+            ("高", ReasoningRequest::ChatGptHigh),
+        ] {
+            let plan = resolve_selection_plan(Provider::ChatGpt, None, Some(value)).unwrap();
+            assert_eq!(plan.reasoning, Some(expected), "unexpected alias {value}");
+        }
+    }
+
+    #[test]
+    fn converts_legacy_reasoning_like_model_values() {
+        let chatgpt = resolve_selection_plan(Provider::ChatGpt, Some("高"), None).unwrap();
+        assert_eq!(chatgpt.model, None);
+        assert_eq!(chatgpt.reasoning, Some(ReasoningRequest::ChatGptHigh));
+        assert!(chatgpt.used_legacy_model);
+
+        let gemini = resolve_selection_plan(Provider::Gemini, Some("延伸思考"), None).unwrap();
+        assert_eq!(gemini.model, None);
+        assert_eq!(gemini.reasoning, Some(ReasoningRequest::GeminiExtended));
+        assert!(gemini.used_legacy_model);
+    }
+
+    #[test]
+    fn validates_gemini_extended_thinking_combinations() {
+        let plan =
+            resolve_selection_plan(Provider::Gemini, Some("3.1 Pro"), Some("extended")).unwrap();
+        assert_eq!(plan.model.as_deref(), Some("3.1 Pro"));
+        assert_eq!(plan.reasoning, Some(ReasoningRequest::GeminiExtended));
+
+        let error = resolve_selection_plan(Provider::Gemini, Some("3.6 Flash"), Some("extended"))
+            .unwrap_err();
+        assert!(error.contains("incompatible"));
+    }
+
+    #[test]
+    fn rejects_unsupported_or_ambiguous_reasoning_values() {
+        let unsupported =
+            resolve_selection_plan(Provider::ChatGpt, None, Some("ultra")).unwrap_err();
+        assert!(unsupported.contains("auto, instant, medium, high"));
+
+        let ambiguous =
+            resolve_selection_plan(Provider::ChatGpt, Some("高"), Some("high")).unwrap_err();
+        assert!(ambiguous.contains("cannot be combined"));
+    }
+
+    #[test]
+    fn rejects_claude_reasoning_without_changing_model_selection() {
+        let error =
+            resolve_selection_plan(Provider::Claude, Some("Sonnet"), Some("high")).unwrap_err();
+        assert!(error.contains("Claude"));
+        assert!(error.contains("--reasoning"));
+
+        let plan = resolve_selection_plan(Provider::Claude, Some("Sonnet"), None).unwrap();
+        assert_eq!(plan.model.as_deref(), Some("Sonnet"));
+        assert_eq!(plan.reasoning, None);
+    }
+
+    #[test]
+    fn preserves_claude_model_selector_script() {
+        let target = serde_json::to_string("Sonnet").unwrap();
+        let script = claude_model_switch_script(&target);
+
+        assert!(script.contains(r#"[data-testid="model-selector-dropdown"]"#));
+        assert!(script.contains("model|claude|opus|sonnet|haiku|fable"));
+        assert!(script.contains("startsWith(target)"));
+        assert!(script.contains(r#"const target = norm("Sonnet");"#));
+    }
+
+    #[test]
+    fn preserves_provider_baselines_without_reasoning() {
+        for provider in [Provider::ChatGpt, Provider::Gemini, Provider::Claude] {
+            let plan = resolve_selection_plan(provider, None, None).unwrap();
+            assert_eq!(plan, SelectionPlan::default());
+        }
+    }
+
+    #[test]
     fn finds_linux_google_chrome_command_from_path() {
         let root = make_test_dir("chrome_path");
         let first_dir = root.join("first");
@@ -4507,8 +4770,202 @@ fn upload_attachments_to_provider(
     Ok(())
 }
 
-/// Switch the selected provider to the specified model. The page must already be
-/// loaded and logged in. `model` is matched case- and punctuation-insensitively.
+#[derive(Clone, Copy)]
+enum SelectionKind {
+    Model,
+    Reasoning,
+}
+
+impl SelectionKind {
+    fn display_name(self) -> &'static str {
+        match self {
+            SelectionKind::Model => "model",
+            SelectionKind::Reasoning => "reasoning",
+        }
+    }
+}
+
+fn switch_semantic_option(
+    config_path: &str,
+    provider: Provider,
+    target_aliases: &[&str],
+    verification_aliases: &[&str],
+    kind: SelectionKind,
+    verbose: bool,
+) -> Result<(), String> {
+    if provider == Provider::Claude {
+        return Err("Semantic option selection is not supported for Claude".to_string());
+    }
+    let primary_target = target_aliases
+        .first()
+        .ok_or_else(|| format!("No {} target was provided", kind.display_name()))?;
+    if verification_aliases.is_empty() {
+        return Err(format!(
+            "No {} verification aliases were provided",
+            kind.display_name()
+        ));
+    }
+
+    let request = serde_json::json!({
+        "provider": provider.to_string(),
+        "targetAliases": target_aliases,
+        "verificationAliases": verification_aliases,
+    });
+    let request_json = serde_json::to_string(&request)
+        .map_err(|error| format!("Failed to serialize selection request: {error}"))?;
+    let helper = include_str!("model-selection.cjs");
+    let js = format!(
+        r#"() => {{
+            {helper}
+            window.__ask_bridge_selection_status = 'pending';
+            (async () => {{
+                try {{
+                    const result = await globalThis.AskBridgeModelSelection.selectProviderOption({request_json});
+                    if (result.ok) {{
+                        window.__ask_bridge_selection_status = 'success:' + result.selected;
+                    }} else {{
+                        const available = result.available && result.available.length
+                            ? '; available options: ' + result.available.join(', ')
+                            : '';
+                        window.__ask_bridge_selection_status = 'error: ' + result.error + available;
+                    }}
+                }} catch (error) {{
+                    window.__ask_bridge_selection_status = 'error: ' + error.message;
+                }}
+            }})();
+            return true;
+        }}"#
+    );
+
+    if verbose {
+        println!(
+            "Switching {} {} to '{}'...",
+            provider.display_name(),
+            kind.display_name(),
+            primary_target
+        );
+    }
+
+    let start_result = call_mcp_tool(
+        config_path,
+        "evaluate_script",
+        serde_json::json!({ "function": js }),
+    )?;
+    let start_parsed = parse_script_result(&start_result)?;
+    if !start_parsed.as_bool().unwrap_or(false) {
+        return Err(format!(
+            "Failed to initiate {} switch script",
+            kind.display_name()
+        ));
+    }
+
+    let mut wait_cycles = 0;
+    let mut status = String::from("pending");
+    while status == "pending" && wait_cycles < 75 {
+        thread::sleep(Duration::from_millis(200));
+        let check_result = call_mcp_tool(
+            config_path,
+            "evaluate_script",
+            serde_json::json!({
+                "function": "() => window.__ask_bridge_selection_status || 'pending'"
+            }),
+        )?;
+        status = parse_script_result(&check_result)?
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| format!("Invalid {} switch status", kind.display_name()))?;
+        wait_cycles += 1;
+    }
+
+    if status.starts_with("error:") {
+        return Err(format!("{} switch failed: {}", kind.display_name(), status));
+    }
+    if status == "pending" {
+        return Err(format!(
+            "Timed out waiting for {} switch",
+            kind.display_name()
+        ));
+    }
+    if !status.starts_with("success:") {
+        return Err(format!(
+            "Unexpected {} switch status: {status}",
+            kind.display_name()
+        ));
+    }
+
+    if verbose {
+        println!("{} switched successfully ({status})", kind.display_name());
+    }
+    thread::sleep(Duration::from_millis(500));
+
+    Ok(())
+}
+
+fn claude_model_switch_script(target_json: &str) -> String {
+    let template = r#"() => {
+        window.__switch_model_status = 'pending';
+        (async () => {
+            try {
+                const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+                const norm = (s) => (s || '').toLowerCase().replace(/[\s.\-_]/g, '');
+                const labelOf = (el) => ((el.innerText || el.textContent || '').split('\n')[0] || '').trim();
+                const target = norm(__TARGET_MODEL__);
+                if (!target) { window.__switch_model_status = 'error: empty target'; return; }
+                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+                await sleep(300);
+                let trigger = document.querySelector('[data-testid="model-selector-dropdown"]');
+                if (!trigger) {
+                    trigger = Array.from(document.querySelectorAll('button')).find((button) => {
+                        const popup = button.getAttribute('aria-haspopup');
+                        if (popup !== 'menu' && popup !== 'listbox') return false;
+                        const label = [button.getAttribute('aria-label'), button.textContent].filter(Boolean).join(' ');
+                        return /model|claude|opus|sonnet|haiku|fable/i.test(label);
+                    });
+                }
+                if (!trigger) { window.__switch_model_status = 'error: Claude model selector not found'; return; }
+                trigger.click();
+                await sleep(800);
+                const visited = new Set();
+                let clicked = false;
+                let chosen = '';
+                for (let depth = 0; depth < 4 && !clicked; depth++) {
+                    const items = Array.from(document.querySelectorAll('[role="menuitem"], [role="option"], [role="menuitemradio"]'));
+                    const leaves = items.filter((it) => it.getAttribute('aria-haspopup') !== 'menu');
+                    let match = leaves.find((it) => norm(labelOf(it)) === target);
+                    if (!match) match = leaves.find((it) => norm(labelOf(it)).startsWith(target));
+                    if (match) {
+                        match.click();
+                        clicked = true;
+                        chosen = labelOf(match);
+                        break;
+                    }
+                    const trigs = items.filter((it) => it.getAttribute('aria-haspopup') === 'menu');
+                    const trig = trigs.find((it) => !visited.has(norm(it.innerText)));
+                    if (!trig) break;
+                    visited.add(norm(trig.innerText));
+                    trig.dispatchEvent(new MouseEvent('pointerenter', { bubbles: true }));
+                    trig.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+                    trig.click();
+                    await sleep(700);
+                }
+                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+                if (!clicked) {
+                    window.__switch_model_status = 'error: model not found in menu';
+                    return;
+                }
+                await sleep(400);
+                window.__switch_model_status = 'success:' + chosen;
+            } catch (e) {
+                window.__switch_model_status = 'error: ' + e.message;
+            }
+        })();
+        return true;
+    }"#;
+    template.replace("__TARGET_MODEL__", target_json)
+}
+
+/// Switch the selected provider to the specified model. ChatGPT and Gemini use
+/// exact primary-label matching; Claude retains its existing selector path.
 fn switch_model(
     config_path: &str,
     provider: Provider,
@@ -4517,6 +4974,16 @@ fn switch_model(
 ) -> Result<(), String> {
     if model.trim().is_empty() {
         return Err("Empty model name".to_string());
+    }
+    if provider != Provider::Claude {
+        return switch_semantic_option(
+            config_path,
+            provider,
+            &[model.trim()],
+            &[model.trim()],
+            SelectionKind::Model,
+            verbose,
+        );
     }
     let target_json = serde_json::to_string(model.trim())
         .map_err(|e| format!("Failed to serialize model name: {}", e))?;
@@ -4529,189 +4996,7 @@ fn switch_model(
         );
     }
 
-    let js = match provider {
-        Provider::ChatGpt => {
-            // The script opens the composer pill menu, walks visible leaves and submenu
-            // triggers, and clicks the first leaf whose normalized label matches.
-            "() => {\n".to_string()
-                + "    window.__switch_model_status = 'pending';\n"
-                + "    (async () => {\n"
-                + "    try {\n"
-                + "        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));\n"
-                + "        const norm = (s) => (s || '').toLowerCase().replace(/[\\s.\\-_]/g, '');\n"
-                + &format!("        const target = norm({});\n", target_json)
-                + "        if (!target) { window.__switch_model_status = 'error: empty target'; return; }\n"
-                + "        const visited = new Set();\n"
-                + "        const closeMenus = async () => {\n"
-                + "            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));\n"
-                + "            await sleep(400);\n"
-                + "        };\n"
-                + "        await closeMenus();\n"
-                + "        let pill = null;\n"
-                + "        for (let i = 0; i < 20; i++) {\n"
-                + "            pill = document.querySelector('button.__composer-pill');\n"
-                + "            if (pill) break;\n"
-                + "            await sleep(250);\n"
-                + "        }\n"
-                + "        if (!pill) { window.__switch_model_status = 'error: composer pill not found'; return; }\n"
-                + "        pill.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));\n"
-                + "        pill.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));\n"
-                + "        pill.click();\n"
-                + "        await sleep(800);\n"
-                + "        let clicked = false;\n"
-                + "        let chosen = '';\n"
-                + "        for (let depth = 0; depth < 6 && !clicked; depth++) {\n"
-                + "            const all = Array.from(document.querySelectorAll('[role=\"menuitem\"], [role=\"menuitemradio\"]'));\n"
-                + "            const leaves = all.filter((it) => it.getAttribute('aria-haspopup') !== 'menu');\n"
-                + "            for (const it of leaves) {\n"
-                + "                const t = norm(it.innerText);\n"
-                + "                if (t && t === target) {\n"
-                + "                    it.click();\n"
-                + "                    clicked = true;\n"
-                + "                    chosen = it.innerText;\n"
-                + "                    break;\n"
-                + "                }\n"
-                + "            }\n"
-                + "            if (clicked) break;\n"
-                + "            const trigs = all.filter((it) => it.getAttribute('aria-haspopup') === 'menu');\n"
-                + "            const trig = trigs.find((it) => {\n"
-                + "                const k = norm(it.innerText) + '|' + (it.getAttribute('aria-label') || '');\n"
-                + "                return !visited.has(k);\n"
-                + "            });\n"
-                + "            if (!trig) break;\n"
-                + "            visited.add(norm(trig.innerText) + '|' + (trig.getAttribute('aria-label') || ''));\n"
-                + "            trig.dispatchEvent(new MouseEvent('pointerenter', { bubbles: true }));\n"
-                + "            trig.dispatchEvent(new MouseEvent('pointermove', { bubbles: true }));\n"
-                + "            trig.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));\n"
-                + "            trig.click();\n"
-                + "            await sleep(750);\n"
-                + "        }\n"
-                + "        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));\n"
-                + "        if (!clicked) {\n"
-                + "            window.__switch_model_status = 'error: model not found in menu';\n"
-                + "            return;\n"
-                + "        }\n"
-                + "        window.__switch_model_status = 'success:' + chosen;\n"
-                + "    } catch (e) {\n"
-                + "        window.__switch_model_status = 'error: ' + e.message;\n"
-                + "    }\n"
-                + "    })();\n"
-                + "    return true;\n"
-                + "}"
-        }
-        Provider::Gemini => {
-            let template = r#"() => {
-                window.__switch_model_status = 'pending';
-                (async () => {
-                    try {
-                        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-                        const norm = (s) => (s || '').toLowerCase().replace(/[^\p{Letter}\p{Number}]+/gu, '');
-                        const canonical = (s) => {
-                            const n = norm(s).replace(/^已選取/, '');
-                            if (n.includes('flashlite') || n.includes('31flashlite')) return 'flashlite';
-                            if (n.includes('35flash') || (n.endsWith('flash') && !n.includes('lite'))) return 'flash';
-                            if (n.includes('31pro') || n === 'pro') return 'pro';
-                            return n;
-                        };
-                        const target = canonical(__TARGET_MODEL__);
-                        if (!target) { window.__switch_model_status = 'error: empty target'; return; }
-                        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
-                        await sleep(250);
-                        const buttons = Array.from(document.querySelectorAll('button'));
-                        const modeButton = buttons.find((button) => /模式挑選器|model picker|mode picker/i.test([
-                            button.getAttribute('aria-label'),
-                            button.textContent
-                        ].filter(Boolean).join(' ')));
-                        if (!modeButton) { window.__switch_model_status = 'error: Gemini mode picker not found'; return; }
-                        modeButton.click();
-                        await sleep(800);
-                        const items = Array.from(document.querySelectorAll('[role="menuitem"], [role="menuitemradio"]'));
-                        let chosen = null;
-                        for (const item of items) {
-                            const label = item.innerText || item.textContent || item.getAttribute('aria-label') || '';
-                            if (canonical(label) === target || norm(label) === norm(__TARGET_MODEL__)) {
-                                chosen = item;
-                                break;
-                            }
-                        }
-                        if (!chosen) {
-                            window.__switch_model_status = 'error: model not found in menu';
-                            return;
-                        }
-                        chosen.click();
-                        await sleep(500);
-                        window.__switch_model_status = 'success:' + (chosen.innerText || chosen.textContent || '').trim();
-                    } catch (e) {
-                        window.__switch_model_status = 'error: ' + e.message;
-                    }
-                })();
-                return true;
-            }"#;
-            template.replace("__TARGET_MODEL__", &target_json)
-        }
-        Provider::Claude => {
-            let template = r#"() => {
-                window.__switch_model_status = 'pending';
-                (async () => {
-                    try {
-                        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-                        const norm = (s) => (s || '').toLowerCase().replace(/[\s.\-_]/g, '');
-                        const labelOf = (el) => ((el.innerText || el.textContent || '').split('\n')[0] || '').trim();
-                        const target = norm(__TARGET_MODEL__);
-                        if (!target) { window.__switch_model_status = 'error: empty target'; return; }
-                        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
-                        await sleep(300);
-                        let trigger = document.querySelector('[data-testid="model-selector-dropdown"]');
-                        if (!trigger) {
-                            trigger = Array.from(document.querySelectorAll('button')).find((button) => {
-                                const popup = button.getAttribute('aria-haspopup');
-                                if (popup !== 'menu' && popup !== 'listbox') return false;
-                                const label = [button.getAttribute('aria-label'), button.textContent].filter(Boolean).join(' ');
-                                return /model|claude|opus|sonnet|haiku|fable/i.test(label);
-                            });
-                        }
-                        if (!trigger) { window.__switch_model_status = 'error: Claude model selector not found'; return; }
-                        trigger.click();
-                        await sleep(800);
-                        const visited = new Set();
-                        let clicked = false;
-                        let chosen = '';
-                        for (let depth = 0; depth < 4 && !clicked; depth++) {
-                            const items = Array.from(document.querySelectorAll('[role="menuitem"], [role="option"], [role="menuitemradio"]'));
-                            const leaves = items.filter((it) => it.getAttribute('aria-haspopup') !== 'menu');
-                            let match = leaves.find((it) => norm(labelOf(it)) === target);
-                            if (!match) match = leaves.find((it) => norm(labelOf(it)).startsWith(target));
-                            if (match) {
-                                match.click();
-                                clicked = true;
-                                chosen = labelOf(match);
-                                break;
-                            }
-                            const trigs = items.filter((it) => it.getAttribute('aria-haspopup') === 'menu');
-                            const trig = trigs.find((it) => !visited.has(norm(it.innerText)));
-                            if (!trig) break;
-                            visited.add(norm(trig.innerText));
-                            trig.dispatchEvent(new MouseEvent('pointerenter', { bubbles: true }));
-                            trig.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-                            trig.click();
-                            await sleep(700);
-                        }
-                        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
-                        if (!clicked) {
-                            window.__switch_model_status = 'error: model not found in menu';
-                            return;
-                        }
-                        await sleep(400);
-                        window.__switch_model_status = 'success:' + chosen;
-                    } catch (e) {
-                        window.__switch_model_status = 'error: ' + e.message;
-                    }
-                })();
-                return true;
-            }"#;
-            template.replace("__TARGET_MODEL__", &target_json)
-        }
-    };
+    let js = claude_model_switch_script(&target_json);
 
     let start_res = call_mcp_tool(
         config_path,
@@ -4756,6 +5041,22 @@ fn switch_model(
     thread::sleep(Duration::from_millis(500));
 
     Ok(())
+}
+
+fn switch_reasoning(
+    config_path: &str,
+    provider: Provider,
+    reasoning: ReasoningRequest,
+    verbose: bool,
+) -> Result<(), String> {
+    switch_semantic_option(
+        config_path,
+        provider,
+        reasoning.target_aliases(),
+        reasoning.verification_aliases(),
+        SelectionKind::Reasoning,
+        verbose,
+    )
 }
 
 fn wait_for_submit_status(config_path: &str) -> Result<String, String> {
@@ -5754,6 +6055,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
+    let selection_plan =
+        match resolve_selection_plan(provider, cli.model.as_deref(), cli.reasoning.as_deref()) {
+            Ok(plan) => plan,
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        };
+    if selection_plan.used_legacy_model {
+        eprintln!(
+            "Warning: reasoning-like --model values are deprecated; use --reasoning instead."
+        );
+    }
+
     if !command_verbose {
         // SAFETY: Called before spawning other threads and before loading MCP config.
         unsafe {
@@ -6145,10 +6460,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Switch model if requested (before uploading attachments / typing the prompt)
-    if let Some(m) = &cli.model
+    if let Some(m) = &selection_plan.model
         && let Err(e) = switch_model(&config_path, provider, m, command_verbose)
     {
         eprintln!("Error switching model: {}", e);
+        std::process::exit(1);
+    }
+    if let Some(reasoning) = selection_plan.reasoning
+        && let Err(e) = switch_reasoning(&config_path, provider, reasoning, command_verbose)
+    {
+        eprintln!("Error switching reasoning: {}", e);
         std::process::exit(1);
     }
 

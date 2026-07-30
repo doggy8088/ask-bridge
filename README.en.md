@@ -38,7 +38,7 @@ Unlike typical API clients, `ask-bridge` operates inside a real Chrome browser w
 - **🧠 Intelligent Tab Management**: Reuses existing provider tabs if open, focuses them, or opens new ones, avoiding tab clutter.
 - **🖥️ Pipe & Stdin Support**: Supports piping prompts via `stdin` (e.g. `cat report.txt | ask-bridge "summarize this"`).
 - **📎 Image & File Attachments**: Attach local images with `--image` (supported on ChatGPT and Claude), or documents (PDF, Word, Excel, plain text, Markdown, JSON, etc.) with `--file`; Gemini currently supports `--file` and rejects `--image`.
-- **🔀 Model Switching**: Use `--model` to switch the provider model before the prompt is sent, such as ChatGPT `GPT-5.4`, Gemini `3.5 Flash`, or Claude `Sonnet`.
+- **🔀 Model and Reasoning Selection**: Use `--model` for provider models and `--reasoning` for ChatGPT reasoning effort or Gemini Extended Thinking.
 - **Resume Conversations**: Use `--session`, `--session-id`, or `--session-url` to continue an existing provider conversation with a new terminal prompt.
 - **Response Timeout**: Use `--timeout <seconds>` to control how long to wait for a provider response, defaulting to `300` seconds.
 - **🔍 Quiet by Default & Verbose Mode**: Quiet and clean output by default (displaying only the generated response), with an optional `--verbose` flag to display full browser state logs if needed.
@@ -335,28 +335,27 @@ You can attach images and documents at the same time:
 ask-bridge "Compare this design image against the spec document and list inconsistencies." --image design.png --file spec.docx
 ```
 
-### 11. Switch Model
+### 11. Switch Models and Reasoning
 
-Use `--model` to automatically switch the provider model before the prompt is sent. Matching is case- and punctuation-insensitive (`-`, `.`, spaces, etc. are ignored).
+Use `--model` to switch the provider model before the prompt is sent. Use `--reasoning` separately for provider-specific reasoning modes. ChatGPT accepts both in one invocation; Gemini Extended Thinking is compatible only with Pro models.
 
 ```bash
-ask-bridge "Introduce Rust in a few sentences." --model GPT-5.4
-ask-bridge "Prove this math problem." --model o3
-ask-bridge "Quickly translate this." --model 即時
-ask-bridge --provider gemini "Introduce Rust in a few sentences." --model "3.5 Flash"
-ask-bridge --provider gemini "Introduce Rust in a few sentences." --model "3.1 Pro"
+ask-bridge "Prove this math problem." --model "GPT-5.6 Sol" --reasoning high
+ask-bridge "Quickly translate this." --reasoning instant
+ask-bridge --provider gemini "Introduce Rust in a few sentences." --model "3.6 Flash"
+ask-bridge --provider gemini "Prove this math problem." --model "3.1 Pro" --reasoning extended
 ask-bridge --provider claude "Introduce Rust in a few sentences." --model Sonnet
-ask-bridge --provider claude "Prove this math problem." --model Opus
 ```
 
-Available model names (depending on your account entitlements and provider UI):
+Argument rules:
 
-- **ChatGPT models**: `GPT-5.5`, `GPT-5.4`, `GPT-5.3`, `o3`
-- **ChatGPT thinking levels**: `智慧`, `即時`, `中等`, `高`, `超高`, `專業`
-- **Gemini modes**: `3.5 Flash`, `3.1 Flash-Lite`, `3.1 Pro`
-- **Claude models**: `Sonnet`, `Opus`, `Haiku` (actual names depend on the claude.ai menu and your plan)
+- **ChatGPT**: `--reasoning` accepts `auto`, `instant`, `medium`, and `high`, plus the corresponding aliases `智慧`, `即時`, `中`, `中等`, and `高`.
+- **Gemini**: `--reasoning extended` selects Extended Thinking. Omit `--model` or combine it with an available Pro model.
+- **Claude**: `--reasoning` is unsupported. Existing Sonnet, Opus, and Haiku `--model` selection is unchanged.
 
-> If the requested name is not found in the menu, `ask-bridge` reports `Model switch failed: error: model not found in menu` and aborts without submitting the prompt.
+Model matching uses only each menu item's primary label and ignores subtitles and badges. It remains case- and punctuation-insensitive. The tool never maps an obsolete model version to a different version. If the primary label is unavailable, the error lists the provider options currently found and aborts before sending the prompt.
+
+Legacy forms such as `--model 高` and Gemini `--model 延伸思考` remain temporarily supported with a deprecation warning. Use `--reasoning` instead.
 
 ### 12. Just Open a Provider
 

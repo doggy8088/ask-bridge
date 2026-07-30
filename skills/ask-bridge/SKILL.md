@@ -189,6 +189,7 @@ prompt + "\n\n" + stdin
 | `--file <FILE>` | 附加文件檔，可重複指定 | 支援 PDF、Word、Excel、PowerPoint、純文字、Markdown、CSV、JSON、程式碼等；ChatGPT、Gemini 與 Claude 都可用 |
 | `--timeout <SECONDS>` | 設定等待上限 | 必須是大於 0 的整數，預設 `300` 秒；同時套用於一般回覆與 `login` 登入偵測 |
 | `--model <MODEL>` | 送出 prompt 前切換模型 | 比對不分大小寫與標點；模型名稱取決於 provider UI 與帳號權限 |
+| `--reasoning <REASONING>` | 切換 provider 推理模式 | ChatGPT 支援 `auto`、`instant`、`medium`、`high`；Gemini 支援 `extended`；Claude 不支援 |
 | `-h`, `--help` | 顯示 help | 可用 `ask-bridge --help` 或 `ask-bridge help <COMMAND>` |
 | `config` | 設定或顯示全域預設 provider | 使用 `ask-bridge config --provider <chatgpt|gemini|claude>` |
 | `update` | 透過官方安裝指令重新安裝 | 只有使用者明確要求更新 ask-bridge 時才執行 |
@@ -321,23 +322,21 @@ ask-bridge --timeout 600 login
 
 `--timeout` 必須是大於 0 的整數。一般回覆逾時時，工具會停止等待並輸出警告；不要把空白或未完成的輸出當成有效回覆。登入逾時只代表仍未偵測到完成狀態，需檢查瀏覽器後再決定是否重試。
 
-## 模型切換
+## 模型與推理模式切換
 
-使用 `--model` 在送出 prompt 前切換模型：
+模型與推理模式是兩個獨立參數：
 
 ```sh
-ask-bridge '用幾句話介紹 Rust。' --model GPT-5.5
-ask-bridge '證明這個數學問題。' --model o3
-ask-bridge '快速翻譯這段話。' --model 即時
-ask-bridge --provider gemini '用幾句話介紹 Rust。' --model '3.5 Flash'
-ask-bridge --provider gemini '快速摘要這份文件。' --model '3.1 Flash-Lite'
-ask-bridge --provider gemini '用幾句話介紹 Rust。' --model '3.1 Pro'
+ask-bridge '證明這個數學問題。' --model 'GPT-5.6 Sol' --reasoning high
+ask-bridge '快速翻譯這段話。' --reasoning instant
+ask-bridge --provider gemini '用幾句話介紹 Rust。' --model '3.6 Flash'
+ask-bridge --provider gemini '證明這個數學問題。' --model '3.1 Pro' --reasoning extended
 ask-bridge --provider claude '用幾句話介紹 Rust。' --model Sonnet
-ask-bridge --provider claude '證明這個數學問題。' --model Opus
-ask-bridge --provider claude '快速摘要這份文件。' --model Haiku
 ```
 
-模型比對不分大小寫與標點符號。若切換失敗，移除 `--model` 或改用 provider 預設模型，不要猜測替代模型名稱。
+ChatGPT 的 `--reasoning` 支援 `auto`、`instant`、`medium`、`high` 與對應中文別名；Gemini 只支援 `extended`，且不能搭配非 Pro 模型；Claude 不支援 `--reasoning`。
+
+模型只比對 provider 選單的主標籤，忽略副標題與 badge，且不會把不存在的舊版本自動對應到其他版本。若切換失敗，應依錯誤列出的目前選項修正參數，不要猜測替代模型名稱。舊用法 `--model 高` 與 `--model 延伸思考` 暫時可用，但應改成 `--reasoning`。
 
 ## 對話與瀏覽器控制
 
