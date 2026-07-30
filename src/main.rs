@@ -4862,7 +4862,9 @@ fn switch_semantic_option(
 
     let mut wait_cycles = 0;
     let mut status = String::from("pending");
-    while status == "pending" && wait_cycles < 75 {
+    // ChatGPT may wait up to 5s for the picker and traverse six nested levels
+    // twice when post-click verification must reopen the menu.
+    while status == "pending" && wait_cycles < 180 {
         thread::sleep(Duration::from_millis(200));
         let check_result = call_mcp_tool(
             config_path,
