@@ -187,7 +187,7 @@ ask-bridge --provider claude "用幾句話介紹 Rust。" --model Sonnet
 - **Gemini**：`extended`，只能單獨使用或搭配 Pro 模型。
 - **Claude**：不支援 `--reasoning`，原有 `--model` 行為不變。
 
-模型名稱會與 provider 選單的主標籤精確比對，不會把舊版本名稱改選為其他版本；副標題與 badge 不參與比對。
+模型名稱只與 provider 選單的主標籤比對，忽略大小寫、標點、副標題與 badge；不會把舊版本名稱改選為其他版本。
 
 ## 關閉瀏覽器 instance
 

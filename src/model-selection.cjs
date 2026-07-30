@@ -103,8 +103,19 @@
   }
 
   function dispatchClick(element) {
-    element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
-    element.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
+    if (typeof PointerEvent === 'function') {
+      const pointerOptions = {
+        bubbles: true,
+        isPrimary: true,
+        pointerId: 1,
+        pointerType: 'mouse',
+      };
+      element.dispatchEvent(new PointerEvent('pointerdown', pointerOptions));
+      element.dispatchEvent(new PointerEvent('pointerup', pointerOptions));
+    } else {
+      element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    }
     element.click();
   }
 

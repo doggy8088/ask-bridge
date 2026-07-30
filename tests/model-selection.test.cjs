@@ -102,6 +102,8 @@ test('revisits ChatGPT nested menus when verifying a selected model', async () =
   const previousDocument = global.document;
   const previousKeyboardEvent = global.KeyboardEvent;
   const previousMouseEvent = global.MouseEvent;
+  const previousPointerEvent = global.PointerEvent;
+  const pointerEventTypes = [];
   let menuState = 'closed';
 
   function element(text, attributes = {}, click = () => {}) {
@@ -143,6 +145,11 @@ test('revisits ChatGPT nested menus when verifying a selected model', async () =
 
   global.KeyboardEvent = class KeyboardEvent {};
   global.MouseEvent = class MouseEvent {};
+  global.PointerEvent = class PointerEvent {
+    constructor(type) {
+      pointerEventTypes.push(type);
+    }
+  };
   global.document = {
     dispatchEvent() {},
     querySelector(selector) {
@@ -166,9 +173,16 @@ test('revisits ChatGPT nested menus when verifying a selected model', async () =
 
     assert.equal(result.ok, true);
     assert.equal(result.selected, 'GPT-5.6 Sol');
+    assert.deepEqual(pointerEventTypes, [
+      'pointerdown',
+      'pointerup',
+      'pointerdown',
+      'pointerup',
+    ]);
   } finally {
     global.document = previousDocument;
     global.KeyboardEvent = previousKeyboardEvent;
     global.MouseEvent = previousMouseEvent;
+    global.PointerEvent = previousPointerEvent;
   }
 });
