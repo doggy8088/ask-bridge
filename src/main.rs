@@ -5251,10 +5251,48 @@ fn ensure_provider_tab(
     }
     for attempt in 0..90 {
         if attempt > 0 && attempt % 10 == 0 {
+            if let Some(page_id) = new_session_page_id {
+                let current_pages_res =
+                    call_mcp_tool(config_path, "list_pages", serde_json::json!({}))?;
+                let current_pages_text = current_pages_res
+                    .get("content")
+                    .and_then(|content| content.as_array())
+                    .and_then(|items| items.first())
+                    .and_then(|item| item.get("text"))
+                    .and_then(|text| text.as_str())
+                    .ok_or_else(|| {
+                        format!(
+                            "Invalid list_pages response while verifying new tab: {:?}",
+                            current_pages_res
+                        )
+                    })?;
+                let page = parse_pages(current_pages_text)
+                    .into_iter()
+                    .find(|page| page.id == page_id)
+                    .ok_or_else(|| {
+                        format!(
+                            "New {} tab (ID: {}) disappeared; refusing to reuse an existing tab",
+                            provider.display_name(),
+                            page_id
+                        )
+                    })?;
+
+                call_mcp_tool(
+                    config_path,
+                    "select_page",
+                    serde_json::json!({
+                        "pageId": page.id,
+                        "bringToFront": !headless
+                    }),
+                )?;
+                continue;
+            }
+
             let page_opt = call_mcp_tool(config_path, "list_pages", serde_json::json!({}))
                 .ok()
-                .and_then(|res| {
-                    res.get("content")
+                .and_then(|response| {
+                    response
+                        .get("content")
                         .and_then(|c| c.as_array())
                         .and_then(|arr| arr.first())
                         .and_then(|obj| obj.get("text"))
@@ -5262,14 +5300,9 @@ fn ensure_provider_tab(
                         .map(|t| t.to_string())
                 })
                 .and_then(|text| {
-                    let current_pages = parse_pages(&text);
-                    if let Some(page_id) = new_session_page_id {
-                        current_pages.into_iter().find(|page| page.id == page_id)
-                    } else {
-                        current_pages
-                            .into_iter()
-                            .find(|page| provider.owns_url(&page.url))
-                    }
+                    parse_pages(&text)
+                        .into_iter()
+                        .find(|page| provider.owns_url(&page.url))
                 });
             if let Some(page) = page_opt {
                 let _ = call_mcp_tool(
@@ -5280,12 +5313,6 @@ fn ensure_provider_tab(
                         "bringToFront": !headless
                     }),
                 );
-            } else if let Some(page_id) = new_session_page_id {
-                return Err(format!(
-                    "New {} tab (ID: {}) disappeared; refusing to reuse an existing tab",
-                    provider.display_name(),
-                    page_id
-                ));
             }
         }
 
