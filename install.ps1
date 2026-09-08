@@ -82,17 +82,17 @@ function Stop-AskBridgeParentForUpdate {
         return
     }
 
-    foreach ($pid in $targetPids) {
-        $targetProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $pid" -ErrorAction SilentlyContinue
+    foreach ($targetPid in $targetPids) {
+        $targetProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $targetPid" -ErrorAction SilentlyContinue
         if (-not $targetProcess) {
             continue
         }
 
-        Write-Host "Stopping running ask-bridge process (PID $pid) to replace binaries safely." -ForegroundColor Cyan
+        Write-Host "Stopping running ask-bridge process (PID $targetPid) to replace binaries safely." -ForegroundColor Cyan
         try {
-            Stop-Process -Id $pid -Force -ErrorAction Stop
+            Stop-Process -Id $targetPid -Force -ErrorAction Stop
         } catch {
-            Write-Host "Warning: failed to stop PID $pid automatically ($($_.Exception.Message))." -ForegroundColor Yellow
+            Write-Host "Warning: failed to stop PID $targetPid automatically ($($_.Exception.Message))." -ForegroundColor Yellow
         }
     }
 }
