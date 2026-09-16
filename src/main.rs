@@ -3329,8 +3329,27 @@ mod tests {
     }
 
     #[test]
+    fn scans_text_only_response_after_image_wait_budget_is_exhausted() {
+        let mut attempts = 0;
+        let images = wait_for_images(Duration::ZERO, Duration::from_secs(1), |remaining| {
+            assert_eq!(remaining, Duration::ZERO);
+            attempts += 1;
+            Ok(ImageScanResult {
+                images: Vec::new(),
+                should_retry: false,
+            })
+        })
+        .expect("an exhausted image budget must not fail a completed text-only response");
+
+        assert!(images.is_empty());
+        assert_eq!(attempts, 1);
+    }
+
+    #[test]
     fn times_out_when_image_scan_stays_not_ready() {
+        let mut attempts = 0;
         let error = wait_for_images(Duration::ZERO, Duration::ZERO, |_| {
+            attempts += 1;
             Ok(ImageScanResult {
                 images: Vec::new(),
                 should_retry: true,
@@ -3339,6 +3358,57 @@ mod tests {
         .expect_err("a permanently pending image should time out");
 
         assert!(error.contains("generated images"));
+        assert_eq!(attempts, 1);
+    }
+
+    #[test]
+    fn fails_incomplete_chatgpt_image_response_after_progress_disappears() {
+        let mut state = ChatGptImageResponseState::default();
+        state.observe(&serde_json::json!({
+            "isNew": true,
+            "imageProgressMarkerPresent": true,
+            "imageProgress": 100,
+            "imageCandidateCount": 0,
+        }));
+        state.observe(&serde_json::json!({
+            "isNew": true,
+            "imageProgressMarkerPresent": false,
+            "imageCandidateCount": 0,
+        }));
+
+        assert!(state.ensure_completed(false).is_err());
+        assert!(state.ensure_completed(true).is_ok());
+    }
+
+    #[test]
+    fn fails_incomplete_chatgpt_image_response_without_a_percentage() {
+        let mut state = ChatGptImageResponseState::default();
+        state.observe(&serde_json::json!({
+            "isNew": true,
+            "imageProgressMarkerPresent": false,
+            "imageCandidateCount": 1,
+        }));
+
+        assert!(state.ensure_completed(false).is_err());
+    }
+
+    #[test]
+    fn preserves_text_only_and_old_response_timeout_behavior() {
+        let mut state = ChatGptImageResponseState::default();
+        assert!(state.ensure_completed(false).is_ok());
+        state.observe(&serde_json::json!({
+            "isNew": false,
+            "imageProgressMarkerPresent": true,
+            "imageCandidateCount": 1,
+        }));
+        state.observe(&serde_json::json!({
+            "isNew": true,
+            "imageProgressMarkerPresent": false,
+            "imageCandidateCount": 0,
+        }));
+
+        assert!(state.ensure_completed(false).is_ok());
+        assert!(state.ensure_completed(true).is_ok());
     }
 
     #[test]
@@ -5019,6 +5089,26 @@ struct ImageScanResult {
     should_retry: bool,
 }
 
+#[derive(Default)]
+struct ChatGptImageResponseState {
+    seen: bool,
+}
+
+impl ChatGptImageResponseState {
+    fn observe(&mut self, response: &Value) {
+        self.seen |= response["isNew"].as_bool() == Some(true)
+            && (response["imageProgressMarkerPresent"].as_bool() == Some(true)
+                || response["imageCandidateCount"].as_u64().unwrap_or(0) > 0);
+    }
+
+    fn ensure_completed(&self, finished: bool) -> Result<(), String> {
+        if self.seen && !finished {
+            return Err("Timed out waiting for ChatGPT image generation to complete".to_string());
+        }
+        Ok(())
+    }
+}
+
 const IMAGE_SCAN_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 const IMAGE_SCAN_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const IMAGE_SCAN_MAX_WAIT: Duration = Duration::from_secs(15);
@@ -5034,6 +5124,8 @@ where
     let started_at = Instant::now();
 
     loop {
+        // Always inspect once, even if copying the final response used the
+        // remaining budget: a text-only response has no image to wait for.
         let remaining = timeout.saturating_sub(started_at.elapsed());
         let result = scan(remaining)?;
         if !result.images.is_empty() || !result.should_retry {
@@ -5049,16 +5141,50 @@ where
     }
 }
 
-fn build_image_scan_script(latest_selector: &str, image_wait_timeout: Duration) -> String {
+fn build_image_scan_script(
+    latest_selector: &str,
+    assistant_selector: &str,
+    initial_assistant_count: Option<usize>,
+    stop_selectors: &str,
+    image_wait_timeout: Duration,
+    chatgpt_progress: bool,
+) -> String {
     let image_wait_timeout_ms = image_wait_timeout.as_millis().min(10_000);
-    r#"() => {
+    let initial_assistant_count = initial_assistant_count
+        .map(|count| count.to_string())
+        .unwrap_or_else(|| "null".to_string());
+    let image_progress_helper = include_str!("image-progress.cjs");
+    r###"() => {
                 const imageScanDeadline = performance.now() + __IMAGE_WAIT_TIMEOUT_MS__;
                 window.__downloaded_images_status = "pending";
                 window.__downloaded_images = null;
                 (async () => {
                     try {
-                        const messages = document.querySelectorAll(__LATEST_SELECTOR__);
-                        const latestMessage = messages[messages.length - 1];
+                        __IMAGE_PROGRESS_HELPER__
+                        const progressOptions = {
+                            assistantSelector: __ASSISTANT_SELECTOR__,
+                            latestSelector: __LATEST_SELECTOR__,
+                            initialAssistantCount: __INITIAL_ASSISTANT_COUNT__
+                        };
+                        const progress = __CHATGPT_PROGRESS__
+                            ? globalThis.AskBridgeImageProgress.inspectActiveImageProgress(progressOptions)
+                            : {
+                                hasTurn: true,
+                                isNew: true,
+                                markerPresent: false,
+                                progress: null,
+                                progressState: 'none',
+                                candidateCount: 0,
+                                readyCount: 0,
+                                allReady: false,
+                                hasImageHint: false
+                            };
+                        const latestMessage = __CHATGPT_PROGRESS__
+                            ? globalThis.AskBridgeImageProgress.findActiveTurn(progressOptions)
+                            : (() => {
+                                const messages = document.querySelectorAll(__LATEST_SELECTOR__);
+                                return messages[messages.length - 1];
+                            })();
                         if (!latestMessage) {
                             window.__downloaded_images = { images: [], shouldRetry: false };
                             window.__downloaded_images_status = "success";
@@ -5068,24 +5194,34 @@ fn build_image_scan_script(latest_selector: &str, image_wait_timeout: Duration) 
                         const imgs = Array.from(latestMessage.querySelectorAll('img'));
                         const responseText = (latestMessage.innerText || latestMessage.textContent || '').trim();
                         const pendingImageMarker = latestMessage.querySelector(
-                            '[aria-busy="true"], [data-is-streaming="true"], [data-testid*="image"], [data-testid*="generat"], [class*="image"], [class*="generat"]'
+                            __CHATGPT_PROGRESS__
+                                ? '[aria-busy="true"], [data-is-streaming="true"]'
+                                : '[aria-busy="true"], [data-is-streaming="true"], [data-testid*="image"], [data-testid*="generat"], [class*="image"], [class*="generat"]'
                         );
-                        const hasImageHint = imgs.length > 0 ||
+                        // ChatGPT's turn toolbar contains mask-image CSS even for
+                        // text-only replies. Use image-specific hints for that provider.
+                        const hasImageHint = (__CHATGPT_PROGRESS__
+                            ? progress.hasImageHint || progress.markerPresent
+                            : imgs.length > 0) ||
                             responseText.length === 0 ||
                             Boolean(pendingImageMarker);
-                        const seenSrcs = new Set();
-                        const candidateImgs = imgs.filter(img => {
-                            const src = img.src || '';
-                            if (src.includes('avatar') || src.includes('profile')) return false;
-                            const width = img.naturalWidth || img.width || 0;
-                            const height = img.naturalHeight || img.height || 0;
-                            if (width > 0 && width < 100) return false;
-                            if (height > 0 && height < 100) return false;
-                            if (!src.startsWith('http') && !src.startsWith('blob:') && !src.startsWith('data:image/')) return false;
-                            if (seenSrcs.has(src)) return false;
-                            seenSrcs.add(src);
-                            return true;
-                        });
+                        const candidateImgs = globalThis.AskBridgeImageProgress.collectImageCandidates(latestMessage);
+                        const stopSelectors = __STOP_SELECTORS__;
+                        const isVisible = (el) => {
+                            if (!el || el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+                            const style = window.getComputedStyle(el);
+                            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                            const rect = el.getBoundingClientRect();
+                            return rect.width > 0 && rect.height > 0;
+                        };
+                        const stopButton = stopSelectors
+                            .map((selector) => document.querySelector(selector))
+                            .find(isVisible);
+                        const generationActive = __CHATGPT_PROGRESS__ && Boolean(stopButton);
+                        const progressPending = __CHATGPT_PROGRESS__ && progress.markerPresent &&
+                            (progress.progress == null || progress.progress < 100);
+                        const progressAt100 = __CHATGPT_PROGRESS__ &&
+                            progress.markerPresent && progress.progress === 100;
 
                         const imagesData = [];
                         const waitForImage = (img) => new Promise((resolve) => {
@@ -5105,54 +5241,81 @@ fn build_image_scan_script(latest_selector: &str, image_wait_timeout: Duration) 
                             timeoutId = setTimeout(finish, Math.min(10000, remainingMs));
                             if (img.complete && img.naturalWidth > 0) finish();
                         });
-                        for (let i = 0; i < candidateImgs.length; i++) {
-                            const img = candidateImgs[i];
-                            try {
-                                if (!img.complete || img.naturalWidth === 0) {
-                                    await waitForImage(img);
-                                }
-                                if (!img.complete || img.naturalWidth === 0) continue;
-
-                                let dataUrl = "";
-                                if ((img.src || '').startsWith('data:image/')) {
-                                    dataUrl = img.src;
-                                } else {
-                                    try {
-                                        const response = await fetch(img.src);
-                                        if (!response.ok) throw new Error('image fetch returned ' + response.status);
-                                        const blob = await response.blob();
-                                        dataUrl = await new Promise((resolve, reject) => {
-                                            const reader = new FileReader();
-                                            reader.onloadend = () => resolve(reader.result);
-                                            reader.onerror = reject;
-                                            reader.readAsDataURL(blob);
-                                        });
-                                    } catch (fetchErr) {
-                                        const canvas = document.createElement('canvas');
-                                        canvas.width = img.naturalWidth || img.width || 512;
-                                        canvas.height = img.naturalHeight || img.height || 512;
-                                        const ctx = canvas.getContext('2d');
-                                        if (!ctx) continue;
-                                        ctx.drawImage(img, 0, 0);
-                                        dataUrl = canvas.toDataURL('image/png');
+                        // A visible stop control means the current response is still
+                        // generating. Do not fetch or return a preview image while it
+                        // is present, even if the image element already reports ready.
+                        if (!generationActive && !progressPending) {
+                            for (let i = 0; i < candidateImgs.length; i++) {
+                                const img = candidateImgs[i];
+                                try {
+                                    if (!img.complete || img.naturalWidth === 0) {
+                                        await waitForImage(img);
                                     }
-                                }
+                                    if (!img.complete || img.naturalWidth === 0) continue;
 
-                                if (dataUrl && dataUrl.startsWith('data:image/')) {
-                                    imagesData.push({
-                                        index: i,
-                                        src: img.src,
-                                        alt: img.alt || "",
-                                        dataUrl: dataUrl
-                                    });
+                                    let dataUrl = "";
+                                    const src = globalThis.AskBridgeImageProgress.imageSource(img);
+                                    if (src.startsWith('data:image/')) {
+                                        dataUrl = src;
+                                    } else {
+                                        try {
+                                            const response = await fetch(src);
+                                            if (!response.ok) throw new Error('image fetch returned ' + response.status);
+                                            const blob = await response.blob();
+                                            dataUrl = await new Promise((resolve, reject) => {
+                                                const reader = new FileReader();
+                                                reader.onloadend = () => resolve(reader.result);
+                                                reader.onerror = reject;
+                                                reader.readAsDataURL(blob);
+                                            });
+                                        } catch (fetchErr) {
+                                            const canvas = document.createElement('canvas');
+                                            canvas.width = img.naturalWidth || img.width || 512;
+                                            canvas.height = img.naturalHeight || img.height || 512;
+                                            const ctx = canvas.getContext('2d');
+                                            if (!ctx) continue;
+                                            ctx.drawImage(img, 0, 0);
+                                            dataUrl = canvas.toDataURL('image/png');
+                                        }
+                                    }
+
+                                    if (dataUrl && dataUrl.startsWith('data:image/')) {
+                                        imagesData.push({
+                                            index: i,
+                                            src: src,
+                                            alt: img.alt || "",
+                                            dataUrl: dataUrl
+                                        });
+                                    }
+                                } catch (err) {
+                                    // The next scan can retry a transiently unavailable image.
                                 }
-                            } catch (err) {
-                                // The next scan can retry a transiently unavailable image.
                             }
                         }
+
+                        const allImagesReady = candidateImgs.length > 0 &&
+                            candidateImgs.every((img) =>
+                                globalThis.AskBridgeImageProgress.isImageLoadReady(img)
+                            );
+                        const decision = globalThis.AskBridgeImageProgress.imageScanDecision({
+                            generationActive,
+                            progress,
+                            candidateCount: candidateImgs.length,
+                            imageCount: imagesData.length,
+                            allImagesReady,
+                            hasImageHint,
+                            chatgptProgress: __CHATGPT_PROGRESS__
+                        });
                         window.__downloaded_images = {
-                            images: imagesData,
-                            shouldRetry: imagesData.length === 0 && hasImageHint
+                            images: decision.canReturnImages ? imagesData : [],
+                            shouldRetry: decision.shouldRetry,
+                            progress: progress.progress,
+                            markerPresent: progress.markerPresent,
+                            generationActive: generationActive,
+                            candidateCount: candidateImgs.length,
+                            readyCount: candidateImgs.filter((img) =>
+                                globalThis.AskBridgeImageProgress.isImageLoadReady(img)
+                            ).length
                         };
                         window.__downloaded_images_status = "success";
                     } catch (e) {
@@ -5160,9 +5323,14 @@ fn build_image_scan_script(latest_selector: &str, image_wait_timeout: Duration) 
                     }
                 })();
                 return { ok: true };
-            }"#
+            }"###
     .replace("__IMAGE_WAIT_TIMEOUT_MS__", &image_wait_timeout_ms.to_string())
+    .replace("__IMAGE_PROGRESS_HELPER__", image_progress_helper)
     .replace("__LATEST_SELECTOR__", latest_selector)
+    .replace("__ASSISTANT_SELECTOR__", assistant_selector)
+    .replace("__INITIAL_ASSISTANT_COUNT__", &initial_assistant_count)
+    .replace("__STOP_SELECTORS__", stop_selectors)
+    .replace("__CHATGPT_PROGRESS__", if chatgpt_progress { "true" } else { "false" })
 }
 
 fn download_images_from_latest_message(
@@ -5170,6 +5338,7 @@ fn download_images_from_latest_message(
     provider: Provider,
     image_output: Option<&str>,
     image_wait_timeout: Duration,
+    initial_assistant_count: Option<usize>,
     verbose: bool,
 ) -> Result<(), String> {
     if verbose {
@@ -5177,9 +5346,18 @@ fn download_images_from_latest_message(
     }
     let latest_selector = serde_json::to_string(provider.latest_response_selector())
         .map_err(|e| format!("Failed to serialize response selector: {}", e))?;
+    let assistant_selector = serde_json::to_string(provider.assistant_selector())
+        .map_err(|e| format!("Failed to serialize assistant selector: {}", e))?;
     let mut scan_images_once = |scan_timeout: Duration| -> Result<ImageScanResult, String> {
         let scan_timeout = std::cmp::min(scan_timeout, IMAGE_SCAN_MAX_WAIT);
-        let image_scan_js = build_image_scan_script(&latest_selector, scan_timeout);
+        let image_scan_js = build_image_scan_script(
+            &latest_selector,
+            &assistant_selector,
+            initial_assistant_count,
+            provider.stop_button_selectors_json(),
+            scan_timeout,
+            provider == Provider::ChatGpt,
+        );
         let start_res = call_mcp_tool(
             config_path,
             "evaluate_script",
@@ -7227,6 +7405,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 page_provider,
                                 cli.image_output.as_deref(),
                                 Duration::from_secs(cli.timeout),
+                                None,
                                 command_verbose,
                             ) {
                                 eprintln!("Error downloading images: {}", e);
@@ -7297,6 +7476,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             page_provider,
                             cli.image_output.as_deref(),
                             Duration::from_secs(cli.timeout),
+                            None,
                             command_verbose,
                         ) {
                             eprintln!("Error downloading images: {}", e);
@@ -7589,20 +7769,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut finished = false;
     let mut wait_cycles = 0;
     let mut stable_done_checks = 0;
+    let mut last_image_progress: Option<u8> = None;
+    let mut image_response_state = ChatGptImageResponseState::default();
     let spinner_frames = vec!["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     let mut spinner_idx = 0;
+    let response_wait_timeout = Duration::from_secs(cli.timeout);
 
     let max_wait_cycles: usize =
         usize::try_from(cli.timeout.saturating_mul(10)).unwrap_or(usize::MAX);
-    while !finished && wait_cycles < max_wait_cycles {
-        // Max wait time: timeout seconds (timeout * 10 * 100ms)
+    while !finished
+        && wait_cycles < max_wait_cycles
+        && response_wait_started_at.elapsed() < response_wait_timeout
+    {
+        // Keep both a cycle guard and an elapsed-time guard. MCP calls can
+        // take longer than one polling interval, so cycles alone do not bound
+        // the user's wall-clock timeout.
         if is_terminal {
             let frame = spinner_frames[spinner_idx % spinner_frames.len()];
-            print!(
-                "\r\x1b[1;36m{}\x1b[0m 正在等待 {} 回應...",
-                frame,
-                provider.display_name()
-            );
+            if let Some(progress) = last_image_progress {
+                print!(
+                    "\r\x1b[K\x1b[1;36m{}\x1b[0m 正在等待 {} 回應... 圖片 {}%",
+                    frame,
+                    provider.display_name(),
+                    progress
+                );
+            } else {
+                print!(
+                    "\r\x1b[K\x1b[1;36m{}\x1b[0m 正在等待 {} 回應...",
+                    frame,
+                    provider.display_name()
+                );
+            }
             io::stdout().flush()?;
             spinner_idx += 1;
         }
@@ -7611,7 +7808,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let stop_selectors = provider.stop_button_selectors_json();
             let assistant_selector = serde_json::to_string(provider.assistant_selector())
                 .map_err(|e| format!("Failed to serialize assistant selector: {}", e))?;
-            let response_check_js = r#"() => {
+            let image_progress_helper = include_str!("image-progress.cjs");
+            let response_check_js = r###"() => {
+                    __IMAGE_PROGRESS_HELPER__
                     const stopSelectors = __STOP_SELECTORS__;
                     const isVisible = (el) => {
                         if (!el || el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
@@ -7622,21 +7821,68 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     };
                     const stopButton = stopSelectors.map((selector) => document.querySelector(selector)).find(isVisible);
                     const messages = document.querySelectorAll(__ASSISTANT_SELECTOR__);
-                    const isNew = messages.length > __INITIAL_COUNT__;
-                    
-                    if (isVisible(stopButton)) {
-                        return { status: "generating", isNew: isNew };
+                    const rawIsNew = messages.length > __INITIAL_COUNT__;
+                    const progress = __CHATGPT_PROGRESS__
+                        ? globalThis.AskBridgeImageProgress.inspectActiveImageProgress({
+                            assistantSelector: __ASSISTANT_SELECTOR__,
+                            initialAssistantCount: __INITIAL_COUNT__
+                        })
+                        : {
+                            isNew: rawIsNew,
+                            markerPresent: false,
+                            progress: null,
+                            progressState: 'none',
+                            candidateCount: 0,
+                            readyCount: 0,
+                            allReady: false
+                        };
+                    const isNew = __CHATGPT_PROGRESS__ ? progress.isNew : rawIsNew;
+                    const progressPending = __CHATGPT_PROGRESS__ && progress.markerPresent &&
+                        (progress.progress == null || progress.progress < 100);
+                    const progressAt100 = __CHATGPT_PROGRESS__ &&
+                        progress.markerPresent && progress.progress === 100;
+                    const progressBlocksCompletion = __CHATGPT_PROGRESS__ &&
+                        globalThis.AskBridgeImageProgress.progressBlocksCompletion(progress);
+
+                    if (isVisible(stopButton) || progressBlocksCompletion) {
+                        return {
+                            status: "generating",
+                            isNew: isNew,
+                            imageProgress: progress.progress,
+                            imageProgressState: progress.progressState,
+                            imageProgressMarkerPresent: progress.markerPresent,
+                            imageCandidateCount: progress.candidateCount,
+                            imageReadyCount: progress.readyCount
+                        };
                     }
                     
                     if (isNew) {
-                        return { status: "done", isNew: isNew };
+                        return {
+                            status: "done",
+                            isNew: isNew,
+                            imageProgress: progress.progress,
+                            imageProgressState: progress.progressState,
+                            imageProgressMarkerPresent: progress.markerPresent,
+                            imageCandidateCount: progress.candidateCount,
+                            imageReadyCount: progress.readyCount
+                        };
                     }
                     
-                    return { status: "waiting", isNew: isNew };
-                }"#
+                    return {
+                        status: "waiting",
+                        isNew: isNew,
+                        imageProgress: progress.progress,
+                        imageProgressState: progress.progressState,
+                        imageProgressMarkerPresent: progress.markerPresent,
+                        imageCandidateCount: progress.candidateCount,
+                        imageReadyCount: progress.readyCount
+                    };
+                }"###
+            .replace("__IMAGE_PROGRESS_HELPER__", image_progress_helper)
             .replace("__STOP_SELECTORS__", stop_selectors)
             .replace("__ASSISTANT_SELECTOR__", &assistant_selector)
-            .replace("__INITIAL_COUNT__", &initial_assistant_count.to_string());
+            .replace("__INITIAL_COUNT__", &initial_assistant_count.to_string())
+            .replace("__CHATGPT_PROGRESS__", if provider == Provider::ChatGpt { "true" } else { "false" });
             let check_res = match call_mcp_tool(
                 &config_path,
                 "evaluate_script",
@@ -7646,6 +7892,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ) {
                 Ok(res) => res,
                 Err(e) => {
+                    stable_done_checks = 0;
                     if command_verbose {
                         eprintln!(
                             "Warning: Failed to poll {} response: {}",
@@ -7653,15 +7900,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             e
                         );
                     }
-                    thread::sleep(Duration::from_millis(100));
+                    let remaining =
+                        response_wait_timeout.saturating_sub(response_wait_started_at.elapsed());
+                    if remaining.is_zero() {
+                        break;
+                    }
+                    thread::sleep(std::cmp::min(Duration::from_millis(100), remaining));
                     wait_cycles += 1;
                     continue;
                 }
             };
 
+            if response_wait_started_at.elapsed() >= response_wait_timeout {
+                break;
+            }
+
             if let Ok(parsed) = parse_script_result(&check_res) {
                 let status = parsed["status"].as_str().unwrap_or("waiting");
                 let is_new = parsed["isNew"].as_bool().unwrap_or(false);
+                if provider == Provider::ChatGpt {
+                    image_response_state.observe(&parsed);
+                    let progress = parsed["imageProgress"]
+                        .as_u64()
+                        .and_then(|value| u8::try_from(value).ok());
+                    if progress != last_image_progress {
+                        if command_verbose {
+                            if is_terminal {
+                                print!("\r\x1b[K");
+                            }
+                            if let Some(value) = progress {
+                                println!("ChatGPT 圖片生成進度：{}%", value);
+                            } else if last_image_progress.is_some() {
+                                println!("ChatGPT 圖片生成進度標記已消失，等待圖片載入完成...");
+                            }
+                        }
+                        last_image_progress = progress;
+                    }
+                }
 
                 if status == "done" && is_new {
                     stable_done_checks += 1;
@@ -7671,10 +7946,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     stable_done_checks = 0;
                 }
+            } else {
+                stable_done_checks = 0;
             }
         }
 
-        thread::sleep(Duration::from_millis(100));
+        let remaining = response_wait_timeout.saturating_sub(response_wait_started_at.elapsed());
+        if remaining.is_zero() {
+            break;
+        }
+        thread::sleep(std::cmp::min(Duration::from_millis(100), remaining));
         wait_cycles += 1;
     }
 
@@ -7724,6 +8005,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             provider,
             cli.image_output.as_deref(),
             image_wait_timeout,
+            Some(initial_assistant_count),
             command_verbose,
         ) {
             image_download_error = Some(e);
@@ -7749,6 +8031,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("\nThread Link: {}", url);
         }
     }
+
+    image_response_state.ensure_completed(finished)?;
 
     if let Some(error) = image_download_error {
         eprintln!("Error downloading images: {}", error);
