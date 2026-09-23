@@ -3675,6 +3675,24 @@ mod tests {
     }
 
     #[test]
+    fn chatgpt_send_button_selectors_keep_cross_locale_fallbacks() {
+        let selectors: Vec<String> =
+            serde_json::from_str(Provider::ChatGpt.send_button_selectors_json())
+                .expect("ChatGPT send button selectors should be valid JSON");
+
+        assert_eq!(
+            selectors,
+            vec![
+                "[data-testid=\"send-button\"]",
+                "#composer-submit-button",
+                "button[aria-label*=\"Send\"]",
+                "button[aria-label*=\"傳送\"]",
+                "button[aria-label*=\"发送\"]"
+            ]
+        );
+    }
+
+    #[test]
     fn extracts_snapshot_uid_from_common_formats() {
         assert_eq!(
             extract_snapshot_uid(r#"- button "上傳檔案" [uid="1_23"]"#),
@@ -6370,11 +6388,16 @@ fn submit_regular_prompt(
                     }
                     
                     const findAndClickSendButton = () => {
+                        const composerRoot = el.closest('form') || el.parentElement;
+                        if (!composerRoot) return null;
                         for (const s of sendSelectors) {
-                            const btn = document.querySelector(s);
-                            // ChatGPT 的送出/停止按鈕共用 #composer-submit-button，
-                            // 必須排除停止型態，否則會誤點成「停止回應」。
-                            if (isVisible(btn) && !isStopButton(btn)) {
+                            const btn = Array.from(document.querySelectorAll(s)).find((candidate) => {
+                                // ChatGPT 的送出/停止按鈕共用 #composer-submit-button，
+                                // 必須排除停止型態，否則會誤點成「停止回應」。
+                                // aria-label 備援 selector 只能在 composer 內生效，避免誤點側欄聊天按鈕。
+                                return composerRoot.contains(candidate) && isVisible(candidate) && !isStopButton(candidate);
+                            });
+                            if (btn) {
                                 btn.click();
                                 return { ok: true, clicked: true, buttonLabel: btn.getAttribute('aria-label') };
                             }
@@ -6539,11 +6562,16 @@ fn submit_chatgpt_agent_prompt(
                     });
 
                     const findAndClickSendButton = () => {
+                        const composerRoot = el.closest('form') || el.parentElement;
+                        if (!composerRoot) return null;
                         for (const s of sendSelectors) {
-                            const btn = document.querySelector(s);
-                            // ChatGPT 的送出/停止按鈕共用 #composer-submit-button，
-                            // 必須排除停止型態，否則會誤點成「停止回應」。
-                            if (isVisible(btn) && !isStopButton(btn)) {
+                            const btn = Array.from(document.querySelectorAll(s)).find((candidate) => {
+                                // ChatGPT 的送出/停止按鈕共用 #composer-submit-button，
+                                // 必須排除停止型態，否則會誤點成「停止回應」。
+                                // aria-label 備援 selector 只能在 composer 內生效，避免誤點側欄聊天按鈕。
+                                return composerRoot.contains(candidate) && isVisible(candidate) && !isStopButton(candidate);
+                            });
+                            if (btn) {
                                 btn.click();
                                 return { ok: true, clicked: true, buttonLabel: btn.getAttribute('aria-label') };
                             }
