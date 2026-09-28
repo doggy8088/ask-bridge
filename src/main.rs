@@ -139,7 +139,9 @@ impl Provider {
 
     fn ready_check_js(self) -> &'static str {
         match self {
-            Provider::ChatGpt => r#"() => document.getElementById('prompt-textarea') !== null"#,
+            Provider::ChatGpt => {
+                r#"() => document.querySelector('#prompt-textarea, [data-composer-markdown][contenteditable="true"][role="textbox"]') !== null"#
+            }
             Provider::Gemini => {
                 r#"() => {
                     return document.querySelector('div[role="textbox"][aria-label*="Gemini"]') !== null ||
@@ -313,7 +315,9 @@ impl Provider {
 
     fn assistant_selector(self) -> &'static str {
         match self {
-            Provider::ChatGpt => "[data-message-author-role=\"assistant\"], .agent-turn",
+            Provider::ChatGpt => {
+                "[data-message-author-role=\"assistant\"], .agent-turn, [data-content-search-unit-key$=\":assistant\"]"
+            }
             Provider::Gemini => "model-response",
             Provider::Claude => ".font-claude-response",
         }
@@ -322,7 +326,7 @@ impl Provider {
     fn latest_response_selector(self) -> &'static str {
         match self {
             Provider::ChatGpt => {
-                "[data-message-author-role=\"assistant\"], .agent-turn, model-response, .model-response, [data-test-id*=\"response\"], [data-testid*=\"response\"]"
+                "[data-message-author-role=\"assistant\"], .agent-turn, [data-content-search-unit-key$=\":assistant\"], model-response, .model-response, [data-test-id*=\"response\"], [data-testid*=\"response\"]"
             }
             Provider::Gemini => "model-response",
             Provider::Claude => ".font-claude-response",
@@ -331,7 +335,7 @@ impl Provider {
 
     fn response_content_selector(self) -> &'static str {
         match self {
-            Provider::ChatGpt => "",
+            Provider::ChatGpt => "[data-markdown-text-style=\"assistant-message\"]",
             Provider::Gemini => {
                 "message-content, .markdown, structured-content-container.model-response-text"
             }
@@ -341,7 +345,9 @@ impl Provider {
 
     fn composer_selectors_json(self) -> &'static str {
         match self {
-            Provider::ChatGpt => r##"["#prompt-textarea"]"##,
+            Provider::ChatGpt => {
+                r##"["#prompt-textarea", "[data-composer-markdown][contenteditable=\"true\"][role=\"textbox\"]"]"##
+            }
             Provider::Gemini => {
                 r#"[
                     "div[role=\"textbox\"][aria-label*=\"Gemini\"]",
@@ -5444,7 +5450,8 @@ fn upload_attachments_via_file_chooser(
                 find_snapshot_uid(&snapshot, &["上傳與工具"], &["更多", "雲端", "drive"])
                     .or_else(|| find_snapshot_uid(&snapshot, &["upload"], &["drive"]))
             }
-            Provider::ChatGpt => find_snapshot_uid(&snapshot, &["attach"], &["settings", "menu"]),
+            Provider::ChatGpt => find_snapshot_uid(&snapshot, &["attach"], &["settings", "menu"])
+                .or_else(|| find_snapshot_uid(&snapshot, &["新增檔案"], &["settings", "menu"])),
             Provider::Claude => find_snapshot_uid(&snapshot, &["attach"], &["settings", "menu"])
                 .or_else(|| find_snapshot_uid(&snapshot, &["upload"], &["drive"])),
         }
@@ -5469,7 +5476,9 @@ fn upload_attachments_via_file_chooser(
         let upload_uid = match provider {
             Provider::Gemini => find_snapshot_uid(&snapshot, &["上傳檔案"], &["雲端", "drive"])
                 .or_else(|| find_snapshot_uid(&snapshot, &["upload", "file"], &["drive"])),
-            Provider::ChatGpt => find_snapshot_uid(&snapshot, &["file"], &["drive", "connect"]),
+            Provider::ChatGpt => find_snapshot_uid(&snapshot, &["file"], &["drive", "connect"])
+                .or_else(|| find_snapshot_uid(&snapshot, &["上傳檔案"], &["雲端", "連接"]))
+                .or_else(|| find_snapshot_uid(&snapshot, &["附加檔案"], &["雲端", "連接"])),
             Provider::Claude => {
                 find_snapshot_uid(&snapshot, &["upload", "file"], &["drive", "connect"])
                     .or_else(|| find_snapshot_uid(&snapshot, &["file"], &["drive", "connect"]))
@@ -6199,7 +6208,7 @@ fn wait_for_chatgpt_agent_menu(config_path: &str) -> Result<(), String> {
                 const rect = el.getBoundingClientRect();
                 return rect.width > 0 && rect.height > 0;
             };
-            const composer = document.querySelector('#prompt-textarea');
+            const composer = document.querySelector('#prompt-textarea, [data-composer-markdown][contenteditable="true"][role="textbox"]');
             const composerRect = composer ? composer.getBoundingClientRect() : null;
             const isNearComposer = (el) => {
                 if (!composerRect) return true;
@@ -6247,7 +6256,7 @@ fn wait_for_chatgpt_agent_menu(config_path: &str) -> Result<(), String> {
 
 fn wait_for_chatgpt_agent_selection(config_path: &str) -> Result<(), String> {
     let js = r#"() => {
-            const composer = document.querySelector('#prompt-textarea');
+            const composer = document.querySelector('#prompt-textarea, [data-composer-markdown][contenteditable="true"][role="textbox"]');
             if (!composer) {
                 return { ok: false, error: 'composer not found' };
             }
@@ -6464,7 +6473,7 @@ fn submit_chatgpt_agent_prompt(
                 try {
                     const sendSelectors = __SEND_SELECTORS__;
                     const stopSelectors = __STOP_SELECTORS__;
-                    const el = document.querySelector('#prompt-textarea');
+                    const el = document.querySelector('#prompt-textarea, [data-composer-markdown][contenteditable="true"][role="textbox"]');
                     if (!el) {
                         window.__submit_status = 'error: composer not found';
                         return;
