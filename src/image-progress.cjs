@@ -179,6 +179,11 @@
   function imageCandidate(image) {
     const source = imageSource(image);
     if (source.includes('avatar') || source.includes('profile')) return false;
+    // Citation favicons (e.g. Google's /s2/favicons service) decorate text
+    // replies with source links; they are never generated images, whatever
+    // size the favicon service returns.
+    const lowerSource = source.toLowerCase();
+    if (lowerSource.includes('/s2/favicons') || lowerSource.includes('/favicon')) return false;
     if (!source.startsWith('http')
       && !source.startsWith('blob:')
       && !source.startsWith('data:image/')) return false;

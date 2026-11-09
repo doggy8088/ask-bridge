@@ -5549,21 +5549,23 @@ fn build_image_scan_script(
                             return;
                         }
 
-                        const imgs = Array.from(latestMessage.querySelectorAll('img'));
                         const responseText = (latestMessage.innerText || latestMessage.textContent || '').trim();
-                        const pendingImageMarker = latestMessage.querySelector(
-                            __CHATGPT_PROGRESS__
-                                ? '[aria-busy="true"], [data-is-streaming="true"]'
-                                : '[aria-busy="true"], [data-is-streaming="true"], [data-testid*="image"], [data-testid*="generat"], [class*="image"], [class*="generat"]'
-                        );
-                        // ChatGPT's turn toolbar contains mask-image CSS even for
-                        // text-only replies. Use image-specific hints for that provider.
-                        const hasImageHint = (__CHATGPT_PROGRESS__
-                            ? progress.hasImageHint || progress.markerPresent
-                            : imgs.length > 0) ||
-                            responseText.length === 0 ||
-                            Boolean(pendingImageMarker);
                         const candidateImgs = globalThis.AskBridgeImageProgress.collectImageCandidates(latestMessage);
+                        // The retry hint must come from the *filtered* candidates,
+                        // not from every <img> in the reply: citation favicons and
+                        // source cards are <img> elements too, and counting them
+                        // made text replies scan until the whole timeout (issue #35).
+                        // Generic [class*="image"] markers are likewise excluded:
+                        // citation cards and toolbars match them without any
+                        // generated image being present. Real generation signals
+                        // remain covered: filtered candidates, ChatGPT's
+                        // image-gen hint selectors / progress marker, and an
+                        // empty response text (image-only replies).
+                        const hasImageHint = candidateImgs.length > 0 ||
+                            responseText.length === 0 ||
+                            (__CHATGPT_PROGRESS__
+                                ? progress.hasImageHint || progress.markerPresent
+                                : false);
                         const stopSelectors = __STOP_SELECTORS__;
                         const isVisible = (el) => {
                             if (!el || el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
@@ -5689,6 +5691,18 @@ fn build_image_scan_script(
     .replace("__INITIAL_ASSISTANT_COUNT__", &initial_assistant_count)
     .replace("__STOP_SELECTORS__", stop_selectors)
     .replace("__CHATGPT_PROGRESS__", if chatgpt_progress { "true" } else { "false" })
+}
+
+/// Reports an image download failure. When the user explicitly requested
+/// image output (`-i`/`--image-output`), the images are part of the requested
+/// result, so the failure is fatal. Otherwise the Markdown reply is the
+/// result, and a failed image scan only earns a warning (issue #35).
+fn report_image_download_error(error: &str, image_output_requested: bool) {
+    if image_output_requested {
+        eprintln!("Error downloading images: {}", error);
+        std::process::exit(1);
+    }
+    eprintln!("Warning: Failed to download generated images: {}", error);
 }
 
 fn download_images_from_latest_message(
@@ -7841,8 +7855,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 None,
                                 command_verbose,
                             ) {
-                                eprintln!("Error downloading images: {}", e);
-                                std::process::exit(1);
+                                report_image_download_error(&e, cli.image_output.is_some());
                             }
                         }
                         Err(e) => {
@@ -7912,8 +7925,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             None,
                             command_verbose,
                         ) {
-                            eprintln!("Error downloading images: {}", e);
-                            std::process::exit(1);
+                            report_image_download_error(&e, cli.image_output.is_some());
                         }
                     }
                     Err(e) => {
@@ -8484,17 +8496,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     image_response_state.ensure_completed(finished)?;
 
-    if let Some(error) = image_download_error {
-        eprintln!("Error downloading images: {}", error);
-        std::process::exit(1);
-    }
-
+    // Write the Markdown reply before reporting any image failure, so a
+    // failed image scan can never discard a completed response (issue #35).
     if let Some(ref output_path) = cli.output {
         if let Err(e) = std::fs::write(output_path, &last_markdown) {
             eprintln!("Error writing output file: {}", e);
         } else if command_verbose {
             println!("Successfully wrote Markdown response to {}", output_path);
         }
+    }
+
+    if let Some(error) = image_download_error {
+        report_image_download_error(&error, cli.image_output.is_some());
     }
 
     Ok(())

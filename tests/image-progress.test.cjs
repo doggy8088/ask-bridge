@@ -443,6 +443,40 @@ test('text-only ChatGPT toolbars with mask-image CSS do not trigger image retrie
   assert.equal(result.shouldRetry, false);
 });
 
+test('citation favicons are not generated-image candidates (issue #35)', () => {
+  const faviconSmall = image({ src: 'https://www.google.com/s2/favicons?domain=gov.uk&sz=64', naturalWidth: 16 });
+  const faviconLarge = image({ src: 'https://www.google.com/s2/favicons?domain=learn.microsoft.com&sz=128', naturalWidth: 128 });
+  const currentTurn = turn({ textContent: 'Answer with cited sources.', images: [faviconSmall, faviconLarge] });
+
+  assert.equal(collectImageCandidates(currentTurn).length, 0);
+  const result = inspect([currentTurn]);
+  assert.equal(result.candidateCount, 0);
+  assert.equal(result.hasImageHint, false);
+});
+
+test('embedded scan does not retry for citation favicons in a text reply (issue #35)', async () => {
+  const favicon = image({ src: 'https://www.google.com/s2/favicons?domain=gov.uk&sz=128', naturalWidth: 128 });
+  const latest = turn({ textContent: 'Answer with cited sources.', images: [favicon] });
+
+  const chatgptScan = await imageScan(new FakeDocument([latest]));
+  assert.equal(chatgptScan.images.length, 0);
+  assert.equal(chatgptScan.shouldRetry, false);
+
+  const geminiScan = await imageScan(new FakeDocument([latest], 'model-response'), { chatgpt: false, selector: 'model-response' });
+  assert.equal(geminiScan.images.length, 0);
+  assert.equal(geminiScan.shouldRetry, false);
+});
+
+test('embedded scan does not retry for a citation card matching [class*="image"] (issue #35)', async () => {
+  const latest = turn({ textContent: 'Answer with a citation card.' });
+  const card = new FakeElement({ className: 'citation-image-card' });
+  latest.querySelector = (selector) => selector.includes('[class*="image"]') ? card : null;
+
+  const scan = await imageScan(new FakeDocument([latest], 'model-response'), { chatgpt: false, selector: 'model-response' });
+  assert.equal(scan.images.length, 0);
+  assert.equal(scan.shouldRetry, false);
+});
+
 test('embedded response script waits for a new turn and never downloads old images', async () => {
   const document = new FakeDocument([turn({ markers: [marker(99)], images: [dataImage(1)] })]);
   const result = responseCheck(document, { baseline: 1 });
