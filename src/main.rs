@@ -91,6 +91,27 @@ impl Provider {
         }
     }
 
+    /// URL used to open a fresh temporary chat. ChatGPT accepts the
+    /// `temporary-chat=true` query parameter; Gemini and Claude have no URL
+    /// switch, so they start from the normal new-chat page and the temporary
+    /// mode is enabled through the page UI instead (see
+    /// `ensure_temporary_chat`).
+    fn temporary_start_url(self) -> &'static str {
+        match self {
+            Provider::ChatGpt => "https://chatgpt.com/?temporary-chat=true",
+            Provider::Gemini => "https://gemini.google.com/app",
+            Provider::Claude => "https://claude.ai/new",
+        }
+    }
+
+    /// The provider's own name for its temporary mode.
+    fn temporary_mode_name(self) -> &'static str {
+        match self {
+            Provider::ChatGpt | Provider::Gemini => "Temporary chat",
+            Provider::Claude => "Incognito chat",
+        }
+    }
+
     fn owns_url(self, url: &str) -> bool {
         Self::from_url(url) == Some(self)
     }
@@ -681,6 +702,13 @@ struct Cli {
     /// Create a brand new provider session in a new tab while preserving existing tabs.
     #[arg(long, default_value_t = false)]
     new: bool,
+
+    /// Start a temporary chat that is not kept in the provider's normal chat
+    /// history (ChatGPT/Gemini "Temporary chat", Claude "Incognito chat").
+    /// Implies --new. ask-bridge verifies the provider is actually in
+    /// temporary mode before sending and aborts without sending otherwise.
+    #[arg(long, default_value_t = false, conflicts_with = "session")]
+    temporary: bool,
 
     /// Resume an existing conversation by provider session ID or full conversation URL.
     #[arg(
@@ -4002,6 +4030,63 @@ mod tests {
     }
 
     #[test]
+    fn parses_temporary_flag_and_conflicts_with_session() {
+        let cli = Cli::try_parse_from(["ask-bridge", "--temporary", "hello"]).unwrap();
+        assert!(cli.temporary);
+
+        // --temporary already implies --new, so combining them is allowed.
+        let cli = Cli::try_parse_from(["ask-bridge", "--temporary", "--new", "hello"]).unwrap();
+        assert!(cli.temporary && cli.new);
+
+        // Resuming an existing (recorded) conversation contradicts a
+        // temporary chat, in every session argument form.
+        assert!(
+            Cli::try_parse_from(["ask-bridge", "--temporary", "--session", "abc", "hello"])
+                .is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["ask-bridge", "--temporary", "--session-id", "abc", "hello"])
+                .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "ask-bridge",
+                "--temporary",
+                "--session-url",
+                "https://chatgpt.com/c/abc",
+                "hello"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn temporary_chat_urls_and_mode_names() {
+        assert_eq!(
+            Provider::ChatGpt.temporary_start_url(),
+            "https://chatgpt.com/?temporary-chat=true"
+        );
+        assert_eq!(
+            Provider::Gemini.temporary_start_url(),
+            "https://gemini.google.com/app"
+        );
+        assert_eq!(
+            Provider::Claude.temporary_start_url(),
+            "https://claude.ai/new"
+        );
+        assert_eq!(Provider::ChatGpt.temporary_mode_name(), "Temporary chat");
+        assert_eq!(Provider::Gemini.temporary_mode_name(), "Temporary chat");
+        assert_eq!(Provider::Claude.temporary_mode_name(), "Incognito chat");
+    }
+
+    #[test]
+    fn temporary_chat_script_embeds_helper_and_provider() {
+        let script = temporary_chat_script(Provider::Claude, "inspectTemporaryChat");
+        assert!(script.contains("AskBridgeTemporaryChat"));
+        assert!(script.contains("inspectTemporaryChat(\"claude\", document)"));
+    }
+
+    #[test]
     fn configured_browser_path_must_exist() {
         let existing = std::env::current_exe().unwrap();
         let existing = existing.to_string_lossy().to_string();
@@ -7182,6 +7267,86 @@ fn chatgpt_chat_mode_script() -> &'static str {
     }"#
 }
 
+fn temporary_chat_script(provider: Provider, action: &str) -> String {
+    let helper = include_str!("temporary-chat.cjs");
+    format!(
+        "() => {{\n{helper}\nreturn globalThis.AskBridgeTemporaryChat.{action}(\"{provider}\", document);\n}}"
+    )
+}
+
+/// Fail-closed temporary mode gate for `--temporary`: activate the
+/// provider's temporary mode and only return Ok once the page positively
+/// confirms it. If the mode cannot be confirmed (control missing, account
+/// not eligible, provider UI changed), the caller aborts and the prompt is
+/// never sent, so it cannot silently land in the normal chat history.
+fn ensure_temporary_chat(
+    config_path: &str,
+    provider: Provider,
+    verbose: bool,
+) -> Result<(), String> {
+    let activate = temporary_chat_script(provider, "activateTemporaryChat");
+    let res = call_mcp_tool(
+        config_path,
+        "evaluate_script",
+        serde_json::json!({ "function": activate }),
+    )?;
+    let state = parse_script_result(&res)?;
+    if state
+        .get("active")
+        .and_then(|active| active.as_bool())
+        .unwrap_or(false)
+    {
+        if verbose {
+            println!(
+                "Confirmed {} mode for {}.",
+                provider.temporary_mode_name(),
+                provider.display_name()
+            );
+        }
+        return Ok(());
+    }
+
+    // The control may render after the composer; keep polling for a positive
+    // confirmation and retry activation periodically.
+    let inspect = temporary_chat_script(provider, "inspectTemporaryChat");
+    let mut last_state = state;
+    for attempt in 0..80 {
+        thread::sleep(Duration::from_millis(125));
+        let script = if attempt > 0 && attempt % 20 == 0 {
+            &activate
+        } else {
+            &inspect
+        };
+        let res = call_mcp_tool(
+            config_path,
+            "evaluate_script",
+            serde_json::json!({ "function": script }),
+        )?;
+        last_state = parse_script_result(&res)?;
+        if last_state
+            .get("active")
+            .and_then(|active| active.as_bool())
+            .unwrap_or(false)
+        {
+            if verbose {
+                println!(
+                    "Confirmed {} mode for {}.",
+                    provider.temporary_mode_name(),
+                    provider.display_name()
+                );
+            }
+            return Ok(());
+        }
+    }
+
+    Err(format!(
+        "Could not confirm {} is in {} mode (last state: {}). Refusing to send the prompt, because it would be saved to the normal chat history. The provider UI may have changed, or this account may not offer temporary chats.",
+        provider.display_name(),
+        provider.temporary_mode_name(),
+        last_state
+    ))
+}
+
 fn ensure_chatgpt_chat_mode(config_path: &str, verbose: bool) -> Result<(), String> {
     let res = call_mcp_tool(
         config_path,
@@ -7750,6 +7915,24 @@ fn ensure_provider_tab(
     headless: bool,
     verbose: bool,
 ) -> Result<(), String> {
+    ensure_provider_tab_with_url(
+        config_path,
+        provider,
+        force_new,
+        headless,
+        verbose,
+        provider.home_url(),
+    )
+}
+
+fn ensure_provider_tab_with_url(
+    config_path: &str,
+    provider: Provider,
+    force_new: bool,
+    headless: bool,
+    verbose: bool,
+    initial_url: &str,
+) -> Result<(), String> {
     if verbose {
         println!("Checking open Chrome tabs...");
     }
@@ -7775,7 +7958,7 @@ fn ensure_provider_tab(
             config_path,
             "new_page",
             serde_json::json!({
-                "url": provider.home_url()
+                "url": initial_url
             }),
         )?;
 
@@ -7881,7 +8064,7 @@ fn ensure_provider_tab(
                         config_path,
                         "navigate_page",
                         serde_json::json!({
-                            "url": provider.home_url()
+                            "url": initial_url
                         }),
                     )?;
                 } else {
@@ -7892,7 +8075,7 @@ fn ensure_provider_tab(
                         config_path,
                         "new_page",
                         serde_json::json!({
-                            "url": provider.home_url()
+                            "url": initial_url
                         }),
                     )?;
                 }
@@ -8631,12 +8814,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             std::process::exit(1);
         }
-    } else if let Err(e) = ensure_provider_tab(
+    } else if let Err(e) = ensure_provider_tab_with_url(
         &config_path,
         provider,
-        cli.new,
+        cli.new || cli.temporary,
         is_headless,
         command_verbose,
+        if cli.temporary {
+            provider.temporary_start_url()
+        } else {
+            provider.home_url()
+        },
     ) {
         eprintln!("Error ensuring {} tab: {}", provider.display_name(), e);
         std::process::exit(1);
@@ -8680,6 +8868,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if provider == Provider::ChatGpt
         && let Err(e) = ensure_chatgpt_chat_mode(&config_path, command_verbose)
+    {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
+    }
+
+    // Temporary chats must be confirmed before anything is typed or
+    // uploaded; failing here aborts the run without sending the prompt.
+    if cli.temporary
+        && let Err(e) = ensure_temporary_chat(&config_path, provider, command_verbose)
     {
         eprintln!("Error: {}", e);
         std::process::exit(1);

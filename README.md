@@ -41,6 +41,7 @@
 - **圖片與文件上傳**：可透過 `--image` 附上圖片（支援 ChatGPT 與 Claude），或透過 `--file` 附上文件（PDF、Word、Excel、純文字、Markdown、JSON 等皆可），一次可指定多個檔案；Gemini 目前支援 `--file`，不支援 `--image` 圖片輸入。
 - **模型與推理模式切換**：使用 `--model` 選模型，並以 `--reasoning` 分別控制 ChatGPT 推理強度或 Gemini 延伸思考。
 - **接續既有對話**：使用 `--session`、`--session-id` 或 `--session-url` 指定既有對話，再從終端機送出新的 prompt。
+- **臨時聊天**：使用 `--temporary` 建立不保留於一般聊天歷史的臨時對話（ChatGPT／Gemini 的 Temporary Chat、Claude 的 Incognito Chat）；送出前會先確認已進入臨時模式，無法確認時直接中止、不送出問題。
 - **回應超時**：使用 `--timeout <秒數>` 設定等待回應上限，預設為 `300` 秒。
 - **預設安靜模式與 verbose 模式**：預設只輸出最終回覆；加上 `--verbose` 可顯示背景瀏覽器控制流程。
 - **版本資訊**：使用 `-v` 或 `--version` 顯示目前版本號。
@@ -228,6 +229,30 @@ ask-bridge "誰是保哥？" --new
 此模式只會開啟並使用新的所選 provider 分頁。執行前已存在的 provider
 分頁與其他網站分頁都會保留；若無法唯一辨識新分頁，命令會停止且不會改用
 或關閉既有分頁。
+
+#### 臨時聊天（`--temporary`）
+
+使用 `--temporary` 可建立不保留於一般聊天歷史的臨時對話，適合一次性或
+較敏感的內容：
+
+```bash
+ask-bridge --provider chatgpt --temporary "請分析這份資料"
+ask-bridge --provider gemini --temporary "請分析這份資料"
+ask-bridge --provider claude --temporary "請分析這份資料"
+```
+
+`--temporary` 自動包含 `--new` 的效果（每次都開新分頁），且不可與
+`--session`／`--session-id`／`--session-url` 同時使用；模型切換、推理模式、
+附件與 `-o`／`-i` 輸出等既有功能維持不變。
+
+三個 provider 進入臨時模式的方式不同：ChatGPT 透過
+`?temporary-chat=true` 參數開啟並以頁面標示驗證；Gemini 需點按頁面的
+「Temporary chat」（僅個人 Google 帳號提供）；Claude 需點按右上角的
+Incognito（鬼魂圖示）按鈕。送出問題前，ask-bridge 會確認頁面已進入臨時
+模式；無法確認時會直接中止並且不送出問題，避免內容被誤存入一般聊天
+歷史。請注意，臨時模式由各 provider 定義：對話仍可能依其政策在伺服器端
+短暫保留（例如 Gemini 最長 72 小時、Claude Incognito 約 30 天），並非
+即時刪除。
 
 ### 4. 接續既有對話
 
