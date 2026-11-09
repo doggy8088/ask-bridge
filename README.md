@@ -34,6 +34,7 @@
 - **持久登入狀態**：使用專屬本機 profile 目錄 `~/.config/ask-bridge/chrome-profile`，避免重複登入。
 - **回覆輸出**：所選 provider 產生回覆時，將內容輸出到終端機。
 - **思考動畫**：等待 provider 回覆時，在終端機顯示旋轉 spinner，開始輸出內容後自動清除。
+- **ChatGPT 生圖進度**：讀取網頁上的圖片生成百分比，配合生成狀態與圖片載入狀態判斷完成；終端機與 `--verbose` 可顯示進度。
 - **智慧分頁管理**：可重用既有 provider 分頁、聚焦分頁，或開啟新分頁，避免分頁過度增加。
 - **Pipe 與 stdin 支援**：支援透過 standard input 傳入 prompt，例如 `cat report.txt | ask-bridge "summarize this"`。
 - **圖片與文件上傳**：可透過 `--image` 附上圖片（支援 ChatGPT 與 Claude），或透過 `--file` 附上文件（PDF、Word、Excel、純文字、Markdown、JSON 等皆可），一次可指定多個檔案；Gemini 目前支援 `--file`，不支援 `--image` 圖片輸入。
@@ -330,9 +331,19 @@ ask-bridge "幫我檢查這段程式碼有沒有問題。" --file src/main.rs
 ask-bridge "請對照這張設計圖與規格文件，指出不一致的地方。" --image design.png --file spec.docx
 ```
 
-#### 顯示上傳結果
+#### 下載生成圖片
 
 provider 回覆後，可使用 `-i` / `--image-output` 指定生成圖片的下載路徑（資料夾或檔案路徑）。
+
+```bash
+ask-bridge --provider chatgpt "請產生一張茶壺插畫" --image-output /tmp/teapot.png --verbose
+```
+
+ChatGPT 顯示圖片生成百分比時，工具會持續讀取進度，避免將生成中的預覽圖當成完成結果。百分比達到 100% 或進度欄位消失後，仍會確認生成已結束且圖片載入完成，再下載圖片；若網頁沒有百分比，則沿用生成狀態與圖片就緒檢查。等待仍受 `--timeout` 限制。
+
+若已偵測到本次 ChatGPT 回覆的生圖進度或候選圖片，但回覆未能在期限內完成，工具會以非零狀態結束，且不會以空內容覆寫 `--output` 檔案；不會因為顯示 100% 就略過圖片就緒檢查。
+
+ChatGPT 的多張生成圖片必須全部取得才會回報下載成功；部分圖片無法取得時會重試至逾時，而不會將部分成果誤報為完整下載。此規則僅適用於 ChatGPT，不變更 Gemini 與 Claude 的既有下載行為。
 
 ### 11. 切換模型與推理模式
 
