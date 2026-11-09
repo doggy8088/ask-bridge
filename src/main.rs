@@ -658,6 +658,22 @@ struct Cli {
     #[arg(long, short = 'p', value_enum, global = true)]
     provider: Option<Provider>,
 
+    /// Browser executable to launch instead of Google Chrome (any Chromium-based
+    /// browser, e.g. ego lite, Brave, Edge, Chromium). Overrides the
+    /// ASK_BRIDGE_BROWSER_PATH environment variable and ~/.config/ask-bridge/config.json.
+    /// With the `config` subcommand, persists the value to config.json; an empty
+    /// value clears the configured browser path.
+    #[arg(long = "browser-path", value_name = "PATH", global = true)]
+    browser_path: Option<String>,
+
+    /// Browser profile directory. Overrides the ASK_BRIDGE_BROWSER_PROFILE_DIR
+    /// environment variable and ~/.config/ask-bridge/config.json. When a custom
+    /// browser is configured without a profile directory, a per-browser profile
+    /// under ~/.config/ask-bridge/<browser>-profile is used. With the `config`
+    /// subcommand, persists the value to config.json; an empty value clears it.
+    #[arg(long = "browser-profile-dir", value_name = "DIR", global = true)]
+    browser_profile_dir: Option<String>,
+
     /// Run Chrome in headless mode. Defaults to true.
     #[arg(long, require_equals = true, num_args = 0..=1, default_value = "true", default_missing_value = "true")]
     headless: bool,
@@ -742,7 +758,7 @@ enum Commands {
     Login,
     /// Close the managed Chrome browser instance
     Close,
-    /// Set or show the global default provider used when --provider is not specified.
+    /// Set or show global defaults (provider, browser path, browser profile directory).
     Config,
     /// Reinstall ask-bridge using the recommended README installation command
     Update,
@@ -758,6 +774,10 @@ enum Commands {
 #[serde(default)]
 struct AppConfig {
     provider: Option<String>,
+    #[serde(alias = "browserPath")]
+    browser_path: Option<String>,
+    #[serde(alias = "browserProfileDir")]
+    browser_profile_dir: Option<String>,
 }
 
 fn config_file_path() -> Result<PathBuf, String> {
@@ -800,6 +820,136 @@ fn load_configured_provider() -> Result<Option<Provider>, String> {
     })
 }
 
+/// Browser executable / profile overrides (issue #36). Resolution order,
+/// highest first: CLI flags (`--browser-path` / `--browser-profile-dir`),
+/// environment variables (`ASK_BRIDGE_BROWSER_PATH` /
+/// `ASK_BRIDGE_BROWSER_PROFILE_DIR`), config.json (`browserPath` /
+/// `browserProfileDir`), then Google Chrome auto-detection with the default
+/// `chrome-profile` directory.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct BrowserSettings {
+    browser_path: Option<String>,
+    profile_dir: Option<String>,
+}
+
+fn normalize_setting(value: Option<String>) -> Option<String> {
+    value.and_then(|v| {
+        let trimmed = v.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
+fn parse_browser_settings(content: &str) -> Result<BrowserSettings, String> {
+    let config: AppConfig =
+        serde_json::from_str(content).map_err(|e| format!("Failed to parse config.json: {}", e))?;
+
+    Ok(BrowserSettings {
+        browser_path: normalize_setting(config.browser_path),
+        profile_dir: normalize_setting(config.browser_profile_dir),
+    })
+}
+
+fn load_config_browser_settings() -> Result<BrowserSettings, String> {
+    let config_path = config_file_path()?;
+    if !config_path.exists() {
+        return Ok(BrowserSettings::default());
+    }
+
+    let content = std::fs::read_to_string(&config_path).map_err(|e| {
+        format!(
+            "Failed to read config file {}: {}",
+            config_path.to_string_lossy(),
+            e
+        )
+    })?;
+
+    parse_browser_settings(&content)
+}
+
+fn browser_settings_with_env(
+    cli_path: Option<&str>,
+    cli_profile_dir: Option<&str>,
+    env_path: Option<String>,
+    env_profile_dir: Option<String>,
+    configured: BrowserSettings,
+) -> BrowserSettings {
+    BrowserSettings {
+        browser_path: normalize_setting(cli_path.map(|v| v.to_string()))
+            .or_else(|| normalize_setting(env_path))
+            .or(configured.browser_path),
+        profile_dir: normalize_setting(cli_profile_dir.map(|v| v.to_string()))
+            .or_else(|| normalize_setting(env_profile_dir))
+            .or(configured.profile_dir),
+    }
+}
+
+fn resolve_browser_settings(
+    cli_path: Option<&str>,
+    cli_profile_dir: Option<&str>,
+) -> Result<BrowserSettings, String> {
+    let configured = load_config_browser_settings()?;
+    Ok(browser_settings_with_env(
+        cli_path,
+        cli_profile_dir,
+        std::env::var("ASK_BRIDGE_BROWSER_PATH").ok(),
+        std::env::var("ASK_BRIDGE_BROWSER_PROFILE_DIR").ok(),
+        configured,
+    ))
+}
+
+/// A configured browser path must exist: silently falling back to Google
+/// Chrome would run a different browser than the user configured (issue #36).
+fn validate_configured_browser_path(path: &str) -> Result<String, String> {
+    if std::path::Path::new(path).exists() {
+        Ok(path.to_string())
+    } else {
+        Err(format!(
+            "Configured browser path does not exist: {}. Fix ASK_BRIDGE_BROWSER_PATH / browserPath, or remove the setting to use Google Chrome auto-detection.",
+            path
+        ))
+    }
+}
+
+fn resolve_browser_path(settings: &BrowserSettings) -> Result<String, String> {
+    match &settings.browser_path {
+        Some(path) => validate_configured_browser_path(path),
+        None => find_chrome_path(),
+    }
+}
+
+/// Derives the per-browser profile name from a browser executable path, e.g.
+/// `/Applications/ego lite.app/Contents/MacOS/ego lite` -> `ego-lite`,
+/// `C:\Program Files\Brave\brave.exe` -> `brave`.
+fn browser_profile_stem(browser_path: &str) -> String {
+    let normalized = browser_path.replace('\\', "/");
+    let file_name = normalized
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or("browser");
+    let stem = file_name.split('.').next().unwrap_or(file_name);
+    let sanitized: String = stem
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = sanitized.trim_matches('-');
+    if trimmed.is_empty() {
+        "browser".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn effective_provider(
     cli_provider: Option<Provider>,
     configured_provider: Option<Provider>,
@@ -827,7 +977,26 @@ fn resolve_provider(cli_provider: Option<Provider>) -> Result<Provider, String> 
     resolve_provider_with(cli_provider, load_configured_provider)
 }
 
-fn write_global_provider_config(provider: Provider) -> Result<(), String> {
+/// Merges `updates` into a config.json object: `Some(value)` sets the key,
+/// `None` removes it. Other existing keys are preserved, so setting the
+/// provider never discards browser settings and vice versa.
+fn merge_config_fields(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    updates: &[(&str, Option<serde_json::Value>)],
+) {
+    for (key, value) in updates {
+        match value {
+            Some(value) => {
+                object.insert(key.to_string(), value.clone());
+            }
+            None => {
+                object.remove(*key);
+            }
+        }
+    }
+}
+
+fn write_config_fields(updates: &[(&str, Option<serde_json::Value>)]) -> Result<PathBuf, String> {
     let config_path = config_file_path()?;
     if let Some(parent) = config_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
@@ -839,9 +1008,31 @@ fn write_global_provider_config(provider: Provider) -> Result<(), String> {
         })?;
     }
 
-    let content =
-        serde_json::to_string_pretty(&serde_json::json!({"provider": provider.to_string()}))
-            .map_err(|e| format!("Failed to serialize provider config: {}", e))?;
+    let mut object = if config_path.exists() {
+        let content = std::fs::read_to_string(&config_path).map_err(|e| {
+            format!(
+                "Failed to read config file {}: {}",
+                config_path.to_string_lossy(),
+                e
+            )
+        })?;
+        if content.trim().is_empty() {
+            serde_json::Map::new()
+        } else {
+            serde_json::from_str::<serde_json::Value>(&content)
+                .map_err(|e| format!("Failed to parse config.json: {}", e))?
+                .as_object()
+                .cloned()
+                .ok_or_else(|| "Failed to parse config.json: expected a JSON object".to_string())?
+        }
+    } else {
+        serde_json::Map::new()
+    };
+
+    merge_config_fields(&mut object, updates);
+
+    let content = serde_json::to_string_pretty(&serde_json::Value::Object(object))
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
     std::fs::write(&config_path, format!("{}\n", content)).map_err(|e| {
         format!(
             "Failed to write config file {}: {}",
@@ -849,6 +1040,13 @@ fn write_global_provider_config(provider: Provider) -> Result<(), String> {
             e
         )
     })?;
+
+    Ok(config_path)
+}
+
+fn write_global_provider_config(provider: Provider) -> Result<(), String> {
+    let config_path =
+        write_config_fields(&[("provider", Some(serde_json::json!(provider.to_string())))])?;
 
     println!(
         "Set default provider to '{}' in {}",
@@ -859,36 +1057,128 @@ fn write_global_provider_config(provider: Provider) -> Result<(), String> {
     Ok(())
 }
 
-fn run_config_command(cli_provider: Option<Provider>) -> Result<(), String> {
-    match cli_provider {
-        Some(provider) => write_global_provider_config(provider),
-        None => {
-            let config_path = config_file_path()?;
-            let configured_provider = load_configured_provider()?;
-            match configured_provider {
-                Some(provider) => {
-                    println!("Current default provider: {}", provider);
-                }
-                None => {
-                    println!("No default provider configured.");
-                    println!("The effective provider is ChatGPT.");
-                }
-            }
-            if config_path.exists() {
-                println!("Config file: {}", config_path.to_string_lossy());
-            } else {
+fn run_config_command(
+    cli_provider: Option<Provider>,
+    browser_path_arg: Option<String>,
+    browser_profile_dir_arg: Option<String>,
+) -> Result<(), String> {
+    let mut changed = false;
+
+    if let Some(provider) = cli_provider {
+        write_global_provider_config(provider)?;
+        changed = true;
+    }
+
+    if let Some(raw_path) = browser_path_arg {
+        match normalize_setting(Some(raw_path)) {
+            Some(path) => {
+                // Fail fast instead of persisting a path that can never launch.
+                validate_configured_browser_path(&path)?;
+                let config_path =
+                    write_config_fields(&[("browserPath", Some(serde_json::json!(path)))])?;
                 println!(
-                    "Config file not created yet: {}",
+                    "Set browser path to '{}' in {}",
+                    path,
                     config_path.to_string_lossy()
                 );
             }
-            println!(
-                "Set default provider with: ask-bridge config --provider <chatgpt|gemini|claude>"
-            );
-            println!("This is a one-time override example: ask-bridge --provider gemini <prompt>");
-            Ok(())
+            None => {
+                let config_path = write_config_fields(&[("browserPath", None)])?;
+                println!("Cleared browser path in {}", config_path.to_string_lossy());
+            }
+        }
+        changed = true;
+    }
+
+    if let Some(raw_dir) = browser_profile_dir_arg {
+        match normalize_setting(Some(raw_dir)) {
+            Some(dir) => {
+                let path = std::path::Path::new(&dir);
+                if path.exists() && !path.is_dir() {
+                    return Err(format!(
+                        "Browser profile directory is not a directory: {}",
+                        dir
+                    ));
+                }
+                let config_path =
+                    write_config_fields(&[("browserProfileDir", Some(serde_json::json!(dir)))])?;
+                println!(
+                    "Set browser profile directory to '{}' in {}",
+                    dir,
+                    config_path.to_string_lossy()
+                );
+            }
+            None => {
+                let config_path = write_config_fields(&[("browserProfileDir", None)])?;
+                println!(
+                    "Cleared browser profile directory in {}",
+                    config_path.to_string_lossy()
+                );
+            }
+        }
+        changed = true;
+    }
+
+    if changed {
+        return Ok(());
+    }
+
+    let config_path = config_file_path()?;
+    let configured_provider = load_configured_provider()?;
+    match configured_provider {
+        Some(provider) => {
+            println!("Current default provider: {}", provider);
+        }
+        None => {
+            println!("No default provider configured.");
+            println!("The effective provider is ChatGPT.");
         }
     }
+    let configured_browser = load_config_browser_settings()?;
+    match &configured_browser.browser_path {
+        Some(path) => println!("Configured browser path: {}", path),
+        None => println!("Browser path: Google Chrome (auto-detected)"),
+    }
+    match &configured_browser.profile_dir {
+        Some(dir) => println!("Configured browser profile directory: {}", dir),
+        None => match &configured_browser.browser_path {
+            Some(path) => println!(
+                "Browser profile directory: ~/.config/ask-bridge/{}-profile (per-browser default)",
+                browser_profile_stem(path)
+            ),
+            None => println!("Browser profile directory: ~/.config/ask-bridge/chrome-profile"),
+        },
+    }
+    if let Ok(value) = std::env::var("ASK_BRIDGE_BROWSER_PATH") {
+        if let Some(value) = normalize_setting(Some(value)) {
+            println!(
+                "Environment ASK_BRIDGE_BROWSER_PATH overrides the configured browser path: {}",
+                value
+            );
+        }
+    }
+    if let Ok(value) = std::env::var("ASK_BRIDGE_BROWSER_PROFILE_DIR") {
+        if let Some(value) = normalize_setting(Some(value)) {
+            println!(
+                "Environment ASK_BRIDGE_BROWSER_PROFILE_DIR overrides the configured profile directory: {}",
+                value
+            );
+        }
+    }
+    if config_path.exists() {
+        println!("Config file: {}", config_path.to_string_lossy());
+    } else {
+        println!(
+            "Config file not created yet: {}",
+            config_path.to_string_lossy()
+        );
+    }
+    println!("Set default provider with: ask-bridge config --provider <chatgpt|gemini|claude>");
+    println!(
+        "Set browser with: ask-bridge config --browser-path <PATH> [--browser-profile-dir <DIR>]"
+    );
+    println!("This is a one-time override example: ask-bridge --provider gemini <prompt>");
+    Ok(())
 }
 
 fn run_update_command() -> Result<(), String> {
@@ -1208,14 +1498,60 @@ fn chrome_profile_path() -> Result<String, String> {
 /// it reliably.
 #[cfg(target_os = "linux")]
 fn wsl_windows_profile_path() -> Result<String, String> {
+    wsl_windows_profile_path_named("chrome-profile")
+}
+
+#[cfg(target_os = "linux")]
+fn wsl_windows_profile_path_named(profile_name: &str) -> Result<String, String> {
     let local_app_data = wsl_windows_local_app_data()?;
 
-    let win_profile = format!(r"{}\ask-bridge\chrome-profile", local_app_data);
+    let win_profile = format!(r"{}\ask-bridge\{}", local_app_data, profile_name);
     let mount_path = wslpath_to_linux(&win_profile)?;
     std::fs::create_dir_all(&mount_path)
         .map_err(|e| format!("Failed to create chrome profile directory: {}", e))?;
 
     Ok(win_profile)
+}
+
+/// Whether a configured browser path points at a Windows-host executable
+/// (relevant under WSL, where its profile must live on the Windows fs).
+fn is_windows_browser_path(browser_path: &str) -> bool {
+    let normalized = browser_path.replace('\\', "/").to_ascii_lowercase();
+    normalized.starts_with("/mnt/")
+        || normalized.ends_with(".exe")
+        || (normalized.len() > 2 && normalized.as_bytes()[1] == b':')
+}
+
+/// Resolves the profile directory for the effective browser settings:
+/// an explicit profile directory wins; a custom browser gets its own
+/// per-browser profile (`~/.config/ask-bridge/<browser>-profile`) so
+/// different Chromium builds never share one profile (issue #36); otherwise
+/// the historical default `chrome-profile` is used unchanged.
+fn effective_chrome_profile_path(settings: &BrowserSettings) -> Result<String, String> {
+    if let Some(dir) = &settings.profile_dir {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("Failed to create browser profile directory {}: {}", dir, e))?;
+        return Ok(dir.clone());
+    }
+
+    if let Some(browser_path) = &settings.browser_path {
+        let profile_name = format!("{}-profile", browser_profile_stem(browser_path));
+
+        #[cfg(target_os = "linux")]
+        {
+            if is_wsl() && is_windows_browser_path(browser_path) {
+                return wsl_windows_profile_path_named(&profile_name);
+            }
+        }
+
+        let mut profile_dir = home::home_dir().ok_or("Could not locate home directory")?;
+        profile_dir.push(format!(".config/ask-bridge/{}", profile_name));
+        std::fs::create_dir_all(&profile_dir)
+            .map_err(|e| format!("Failed to create chrome profile directory: {}", e))?;
+        return Ok(profile_dir.to_string_lossy().to_string());
+    }
+
+    chrome_profile_path()
 }
 
 /// Resolves the Windows `%LOCALAPPDATA%` directory from inside WSL as a native
@@ -1263,15 +1599,6 @@ fn wslpath_to_linux(win_path: &str) -> Result<PathBuf, String> {
         ));
     }
     Ok(PathBuf::from(translated))
-}
-
-/// Returns the `--user-data-dir` value to pass to Chrome. On WSL the Chrome we
-/// launch is the Windows-host executable, which cannot consume a Linux path
-/// (it would fail with exit code 21); `chrome_profile_path()` already returns a
-/// native Windows path under WSL. On non-WSL platforms this is identical to the
-/// native profile path.
-fn chrome_profile_launch_arg() -> Result<String, String> {
-    chrome_profile_path()
 }
 
 fn chrome_pid_path() -> Result<PathBuf, String> {
@@ -1732,15 +2059,22 @@ fn find_chrome_path() -> Result<String, String> {
 }
 
 fn start_chrome_if_needed(
+    settings: &BrowserSettings,
     headless: bool,
     restart_background: bool,
     verbose: bool,
 ) -> Result<(), String> {
-    let profile_path = chrome_profile_path()?;
-    // The Windows-host Chrome (used under WSL) consumes a UNC path, not the
-    // native Linux path. Use the launch arg for `--user-data-dir` and for any
-    // command-line identity matching (the recorded command line is in UNC form).
-    let launch_arg = chrome_profile_launch_arg()?;
+    // A configured browser path that does not exist is a hard error, even if
+    // an instance is already running: never silently fall back to Chrome.
+    if let Some(path) = &settings.browser_path {
+        validate_configured_browser_path(path)?;
+    }
+    let profile_path = effective_chrome_profile_path(settings)?;
+    // The effective profile path is also the `--user-data-dir` launch value:
+    // under WSL both the default and per-browser profile resolvers already
+    // return native Windows paths, which the Windows-host browser requires
+    // (a Linux path would fail with exit code 21).
+    let launch_arg = profile_path.clone();
 
     // A background instance keeps its window off-screen, so reusing it for
     // `login` would leave the user with nothing to see. Restart it gracefully
@@ -1833,7 +2167,7 @@ fn start_chrome_if_needed(
         );
     }
 
-    let chrome_path = find_chrome_path()?;
+    let chrome_path = resolve_browser_path(settings)?;
     let _ = remove_chrome_pid_file();
 
     let mut cmd = Command::new(&chrome_path);
@@ -1861,7 +2195,7 @@ fn start_chrome_if_needed(
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|e| format!("Failed to start Google Chrome: {}", e))?;
+        .map_err(|e| format!("Failed to start browser ({}): {}", chrome_path, e))?;
 
     let child_pid = child.id();
 
@@ -3579,6 +3913,178 @@ mod tests {
     fn rejects_invalid_provider_in_config_json() {
         let err = parse_configured_provider(r#"{"provider":"copilot"}"#).unwrap_err();
         assert!(err.contains("Invalid provider"));
+    }
+
+    #[test]
+    fn parses_browser_settings_from_config_json() {
+        let settings = parse_browser_settings(
+            r#"{"browserPath":"/Applications/ego lite.app/Contents/MacOS/ego lite","browserProfileDir":"/tmp/ego-profile"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            settings.browser_path.as_deref(),
+            Some("/Applications/ego lite.app/Contents/MacOS/ego lite")
+        );
+        assert_eq!(settings.profile_dir.as_deref(), Some("/tmp/ego-profile"));
+
+        // snake_case keys are accepted too, and blank values mean "unset".
+        let settings =
+            parse_browser_settings(r#"{"browser_path":"  ","browser_profile_dir":""}"#).unwrap();
+        assert_eq!(settings, BrowserSettings::default());
+
+        assert_eq!(
+            parse_browser_settings(r#"{"provider":"gemini"}"#).unwrap(),
+            BrowserSettings::default()
+        );
+        assert!(parse_browser_settings("not json").is_err());
+    }
+
+    #[test]
+    fn browser_settings_precedence_is_cli_then_env_then_config() {
+        let configured = BrowserSettings {
+            browser_path: Some("/config/chrome".to_string()),
+            profile_dir: Some("/config/profile".to_string()),
+        };
+
+        let resolved = browser_settings_with_env(
+            None,
+            None,
+            Some("/env/brave".to_string()),
+            None,
+            configured.clone(),
+        );
+        assert_eq!(resolved.browser_path.as_deref(), Some("/env/brave"));
+        assert_eq!(resolved.profile_dir.as_deref(), Some("/config/profile"));
+
+        let resolved = browser_settings_with_env(
+            Some("/cli/edge"),
+            Some("/cli/profile"),
+            Some("/env/brave".to_string()),
+            Some("/env/profile".to_string()),
+            configured.clone(),
+        );
+        assert_eq!(resolved.browser_path.as_deref(), Some("/cli/edge"));
+        assert_eq!(resolved.profile_dir.as_deref(), Some("/cli/profile"));
+
+        let resolved = browser_settings_with_env(None, None, None, None, configured);
+        assert_eq!(resolved.browser_path.as_deref(), Some("/config/chrome"));
+    }
+
+    #[test]
+    fn parses_browser_path_as_global_argument() {
+        let cli = Cli::try_parse_from([
+            "ask-bridge",
+            "config",
+            "--browser-path",
+            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+        ])
+        .unwrap();
+        assert!(matches!(cli.command, Some(Commands::Config)));
+        assert_eq!(
+            cli.browser_path.as_deref(),
+            Some("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser")
+        );
+
+        let cli = Cli::try_parse_from([
+            "ask-bridge",
+            "--browser-path",
+            "/usr/bin/chromium",
+            "--browser-profile-dir",
+            "/tmp/chromium-profile",
+            "hello",
+        ])
+        .unwrap();
+        assert_eq!(cli.browser_path.as_deref(), Some("/usr/bin/chromium"));
+        assert_eq!(
+            cli.browser_profile_dir.as_deref(),
+            Some("/tmp/chromium-profile")
+        );
+    }
+
+    #[test]
+    fn configured_browser_path_must_exist() {
+        let existing = std::env::current_exe().unwrap();
+        let existing = existing.to_string_lossy().to_string();
+        assert_eq!(
+            validate_configured_browser_path(&existing).unwrap(),
+            existing
+        );
+        assert_eq!(
+            resolve_browser_path(&BrowserSettings {
+                browser_path: Some(existing.clone()),
+                profile_dir: None,
+            })
+            .unwrap(),
+            existing
+        );
+
+        let err = validate_configured_browser_path("/definitely/not/a/browser-ask-bridge-test")
+            .unwrap_err();
+        assert!(err.contains("does not exist"));
+        assert!(err.contains("/definitely/not/a/browser-ask-bridge-test"));
+    }
+
+    #[test]
+    fn derives_per_browser_profile_stem() {
+        assert_eq!(
+            browser_profile_stem("/Applications/ego lite.app/Contents/MacOS/ego lite"),
+            "ego-lite"
+        );
+        assert_eq!(
+            browser_profile_stem(r"C:\Program Files\BraveSoftware\Brave-Browser\brave.exe"),
+            "brave"
+        );
+        assert_eq!(
+            browser_profile_stem("/usr/bin/google-chrome-stable"),
+            "google-chrome-stable"
+        );
+        assert_eq!(browser_profile_stem(""), "browser");
+    }
+
+    #[test]
+    fn effective_profile_prefers_explicit_dir_then_per_browser_dir() {
+        let base = make_test_dir("browser_profile");
+        let explicit = base.join("explicit");
+        let settings = BrowserSettings {
+            browser_path: Some("/any/browser".to_string()),
+            profile_dir: Some(explicit.to_string_lossy().to_string()),
+        };
+        let resolved = effective_chrome_profile_path(&settings).unwrap();
+        assert_eq!(resolved, explicit.to_string_lossy().to_string());
+        assert!(explicit.is_dir());
+
+        // A custom browser without an explicit dir gets a per-browser profile
+        // under the real config home; only the name shape is asserted here.
+        let settings = BrowserSettings {
+            browser_path: Some("/Applications/ego lite.app/Contents/MacOS/ego lite".to_string()),
+            profile_dir: None,
+        };
+        let resolved = effective_chrome_profile_path(&settings).unwrap();
+        assert!(
+            resolved.ends_with(".config/ask-bridge/ego-lite-profile")
+                || resolved.ends_with(r"ask-bridge\ego-lite-profile"),
+            "unexpected per-browser profile: {}",
+            resolved
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn merging_config_fields_preserves_other_keys() {
+        let mut object: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(r#"{"provider":"gemini","browserPath":"/x/brave"}"#).unwrap();
+        merge_config_fields(
+            &mut object,
+            &[("browserProfileDir", Some(serde_json::json!("/p")))],
+        );
+        assert_eq!(object["provider"], serde_json::json!("gemini"));
+        assert_eq!(object["browserPath"], serde_json::json!("/x/brave"));
+        assert_eq!(object["browserProfileDir"], serde_json::json!("/p"));
+
+        merge_config_fields(&mut object, &[("browserPath", None)]);
+        assert!(!object.contains_key("browserPath"));
+        assert_eq!(object["provider"], serde_json::json!("gemini"));
     }
 
     #[test]
@@ -7695,7 +8201,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     FORWARD_MCP_STDERR.store(command_verbose, std::sync::atomic::Ordering::Relaxed);
 
     if matches!(cli.command, Some(Commands::Config)) {
-        if let Err(e) = run_config_command(cli.provider) {
+        if let Err(e) = run_config_command(
+            cli.provider,
+            cli.browser_path.clone(),
+            cli.browser_profile_dir.clone(),
+        ) {
             eprintln!("Error: {}", e);
             std::process::exit(1);
         }
@@ -7773,11 +8283,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => cli.headless, // Respect --headless (defaults to true) for all other commands (including Open)
     };
 
+    let browser_settings = match resolve_browser_settings(
+        cli.browser_path.as_deref(),
+        cli.browser_profile_dir.as_deref(),
+    ) {
+        Ok(settings) => settings,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
     if matches!(cli.command, Some(Commands::Close)) {
         // Identity matching against the recorded Windows command line needs the
         // same representation used at launch (UNC under WSL), so prefer the
         // launch argument and fall back to the native profile path.
-        let profile_path = match chrome_profile_launch_arg() {
+        let profile_path = match effective_chrome_profile_path(&browser_settings) {
             Ok(path) => path,
             Err(_) => match chrome_profile_path() {
                 Ok(path) => path,
@@ -7814,7 +8335,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let restart_background = matches!(cli.command, Some(Commands::Login));
-    if let Err(e) = start_chrome_if_needed(is_headless, restart_background, command_verbose) {
+    if let Err(e) = start_chrome_if_needed(
+        &browser_settings,
+        is_headless,
+        restart_background,
+        command_verbose,
+    ) {
         eprintln!("Error starting Chrome: {}", e);
         std::process::exit(1);
     }
@@ -7967,7 +8493,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ),
                 }
                 if command_verbose {
-                    match chrome_profile_path() {
+                    match effective_chrome_profile_path(&browser_settings) {
                         Ok(profile_path) => print_chrome_diagnostics(&profile_path),
                         Err(e) => eprintln!("Warning: Failed to locate Chrome profile: {}", e),
                     }

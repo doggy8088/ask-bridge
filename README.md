@@ -30,6 +30,7 @@
 - **100% Rust 核心**：快速、輕量，編譯後即可執行。
 - **多 provider 支援**：使用 `--provider chatgpt|gemini|claude` 選擇 ChatGPT、Gemini 或 Claude。
 - **全域 provider 設定**：可在 `~/.config/ask-bridge/config.json` 指定預設 provider，CLI 的 `--provider` 會覆蓋設定檔。
+- **可指定瀏覽器**：可用 `--browser-path`、環境變數 `ASK_BRIDGE_BROWSER_PATH` 或設定檔 `browserPath` 改用 ego lite、Brave、Edge、Chromium 等 Chromium 系列瀏覽器，並依瀏覽器使用獨立 profile。
 - **真實瀏覽器自動化**：直接控制監聽 `9223` port 的 Chrome debug profile。
 - **持久登入狀態**：使用專屬本機 profile 目錄 `~/.config/ask-bridge/chrome-profile`，避免重複登入。
 - **回覆輸出**：所選 provider 產生回覆時，將內容輸出到終端機。
@@ -179,6 +180,24 @@ ask-bridge config
 ```bash
 ask-bridge --provider chatgpt "請摘要這段內容。"
 ```
+
+#### 指定瀏覽器（Chromium 系列）
+
+預設自動偵測 Google Chrome。若要改用其他 Chromium 系列瀏覽器（例如 ego lite、Brave、Microsoft Edge、Chromium），可用 `ask-bridge config` 持久設定，或用環境變數／CLI 參數覆寫。優先序為：CLI 參數 > 環境變數 > 設定檔 > Chrome 自動偵測。
+
+```bash
+# 持久設定（寫入 ~/.config/ask-bridge/config.json 的 browserPath）
+ask-bridge config --browser-path "/Applications/ego lite.app/Contents/MacOS/ego lite"
+
+# 一次性覆寫
+ask-bridge --browser-path "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" "請摘要這段內容。"
+ASK_BRIDGE_BROWSER_PATH="/usr/bin/chromium" ask-bridge "請摘要這段內容。"
+
+# 清除設定（傳入空字串）
+ask-bridge config --browser-path ""
+```
+
+自訂瀏覽器預設使用獨立的 profile 目錄 `~/.config/ask-bridge/<瀏覽器名稱>-profile`（例如 `ego-lite-profile`），避免不同瀏覽器共用同一個 profile；也可用 `--browser-profile-dir`、`ASK_BRIDGE_BROWSER_PROFILE_DIR` 或設定檔的 `browserProfileDir` 明確指定。設定的瀏覽器路徑不存在時會直接報錯，不會自動退回 Google Chrome。更換瀏覽器後，請先用該瀏覽器執行一次 `ask-bridge login` 完成登入。
 
 ### 2. 直接提問
 
