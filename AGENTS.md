@@ -20,6 +20,7 @@
 本專案支援 **macOS** 與 **Windows** 系統。由於系統底層指令不同，在開發或重構以下功能時需特別注意平台相容性：
 
 ### 1. Google Chrome 路徑偵測
+* 可覆寫設定（issue #36）：`resolve_browser_path` 優先序為 CLI `--browser-path` > 環境變數 `ASK_BRIDGE_BROWSER_PATH` > `config.json` 的 `browserPath` > 自動偵測；設定值不存在時直接報錯、不退回 Chrome。自訂瀏覽器的 profile 預設為 `~/.config/ask-bridge/<瀏覽器名稱>-profile`，或以 `--browser-profile-dir` / `ASK_BRIDGE_BROWSER_PROFILE_DIR` / `browserProfileDir` 指定；`ask-bridge config --browser-path <PATH>` 可持久化設定（空字串清除），寫入採欄位合併、不覆蓋其他設定。
 * **macOS** 預設路徑：`/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`
 * **Windows** 偵測邏輯（於 `src/main.rs:find_chrome_path` 實作）：
   1. 優先查詢系統 `Program Files` 底下的 Chrome 安裝路徑。
