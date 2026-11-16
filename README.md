@@ -488,6 +488,13 @@ Cancelled）；任一工作未完成時結束代碼為 1。加上 `--fail-fast` 
 `metadata.json`（含分頁 ID 與對話連結），即使程序中途被結束，也能依
 該檔案人工恢復已送出的工作。
 
+兩個以上工作指向同一個既有對話（`session`）時，各工作雖有自己的分頁，
+操作的仍是同一個遠端對話、回覆無法隔離，因此 `--concurrency` 大於 1
+時會在預檢階段直接拒絕重複的對話目標；`--concurrency 1` 循序執行則
+依輸入順序進行。工作結束後其分頁會自動關閉，僅 `Recoverable`（送出
+結果不明確）的工作保留分頁供人工復原，保留數量以不明確送出的次數為
+上限。
+
 ## 運作原理
 
 1. **瀏覽器初始化**：`ask-bridge` 會檢查 Chrome 是否正在監聽 debug port `9223`。若沒有，會以專屬 profile 目錄 `~/.config/ask-bridge/chrome-profile` 啟動 Google Chrome。

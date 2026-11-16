@@ -12,11 +12,11 @@
 //!   already have been submitted).
 
 use super::{
-    ChatGptImageResponseState, LoginState, Provider, call_mcp_tool, check_login_status,
+    ChatGptImageResponseState, LoginState, Page, Provider, call_mcp_tool, check_login_status,
     copy_latest_markdown, download_images_from_latest_message, ensure_chatgpt_chat_mode,
-    ensure_provider_tab_with_url, ensure_temporary_chat, mcp_error_is_transport, open_url_tab,
-    parse_pages, parse_script_result, poll_response_once, resolve_selection_plan,
-    resolve_session_target, submit_prompt_to_provider, switch_model, switch_reasoning,
+    ensure_provider_tab_with_url, ensure_temporary_chat, mcp_error_is_transport, parse_pages,
+    parse_script_result, poll_response_once, resolve_selection_plan, resolve_session_target,
+    submit_prompt_to_provider, switch_model, switch_reasoning, unique_new_page_id,
     upload_attachments_to_provider,
 };
 use serde::Deserialize;
@@ -41,8 +41,27 @@ pub fn with_control_lock<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, 
     f()
 }
 
+/// `call_mcp_tool` only turns JSON-RPC failures into `Err`; a tool that
+/// executed and reported failure comes back as `Ok` with `isError: true`.
+/// Operations whose result is normally discarded (above all `select_page`)
+/// must check this explicitly, or a failed selection would silently let
+/// later operations run on whichever page happens to be selected.
+fn ensure_tool_success(tool: &str, result: &serde_json::Value) -> Result<(), String> {
+    if result.get("isError").and_then(|v| v.as_bool()) == Some(true) {
+        let text = result
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|obj| obj.get("text"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("unknown tool error");
+        return Err(format!("{} failed: {}", tool, text));
+    }
+    Ok(())
+}
+
 fn select_page(config_path: &str, page_id: usize, headless: bool) -> Result<(), String> {
-    call_mcp_tool(
+    let result = call_mcp_tool(
         config_path,
         "select_page",
         serde_json::json!({
@@ -50,7 +69,7 @@ fn select_page(config_path: &str, page_id: usize, headless: bool) -> Result<(), 
             "bringToFront": !headless
         }),
     )?;
-    Ok(())
+    ensure_tool_success("select_page", &result)
 }
 
 /// Run `f` with the job's page selected, holding the batch control lock for
@@ -122,18 +141,31 @@ pub fn validate_job_id(id: &str) -> Result<(), String> {
         && id.len() <= 64
         && id != "."
         && id != ".."
+        && !id.ends_with('.')
         && id.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
         && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
-    if valid {
-        Ok(())
-    } else {
-        Err(format!(
-            "invalid job id \"{}\": use 1-64 characters of [A-Za-z0-9._-], starting with a letter or digit",
+    if !valid {
+        return Err(format!(
+            "invalid job id \"{}\": use 1-64 characters of [A-Za-z0-9._-], starting with a letter or digit and not ending with a dot",
             id
-        ))
+        ));
     }
+    // Windows reserves device names regardless of extension or case; a job
+    // directory with such a name cannot be created there.
+    let stem = id.split('.').next().unwrap_or(id);
+    const WINDOWS_RESERVED: [&str; 22] = [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    if WINDOWS_RESERVED.contains(&stem.to_ascii_uppercase().as_str()) {
+        return Err(format!(
+            "invalid job id \"{}\": \"{}\" is a reserved device name on Windows",
+            id, stem
+        ));
+    }
+    Ok(())
 }
 
 pub fn parse_jobs_jsonl(input: &str) -> Result<Vec<JobSpec>, String> {
@@ -152,27 +184,36 @@ pub fn parse_jobs_jsonl(input: &str) -> Result<Vec<JobSpec>, String> {
         return Err("no jobs found in input".to_string());
     }
 
-    let mut used_ids: HashSet<String> = raws.iter().filter_map(|(_, raw)| raw.id.clone()).collect();
+    // Directory names collide case-insensitively on Windows and on
+    // default macOS filesystems, so uniqueness is checked on the
+    // lowercased ID even though the original spelling is kept for display.
+    let mut used_ids: HashSet<String> = raws
+        .iter()
+        .filter_map(|(_, raw)| raw.id.as_ref().map(|id| id.to_ascii_lowercase()))
+        .collect();
     let mut seen: HashSet<String> = HashSet::new();
     let mut jobs = Vec::with_capacity(raws.len());
     for (position, (line_no, raw)) in raws.into_iter().enumerate() {
         let id = match raw.id {
             Some(id) => {
                 validate_job_id(&id).map_err(|e| format!("line {}: {}", line_no, e))?;
-                if !seen.insert(id.clone()) {
-                    return Err(format!("line {}: duplicate job id \"{}\"", line_no, id));
+                if !seen.insert(id.to_ascii_lowercase()) {
+                    return Err(format!(
+                        "line {}: duplicate job id \"{}\" (job ids must also differ case-insensitively; they become directory names)",
+                        line_no, id
+                    ));
                 }
                 id
             }
             None => {
                 let mut candidate = format!("job-{}", position + 1);
                 let mut suffix = 2;
-                while used_ids.contains(&candidate) {
+                while used_ids.contains(&candidate.to_ascii_lowercase()) {
                     candidate = format!("job-{}-{}", position + 1, suffix);
                     suffix += 1;
                 }
-                used_ids.insert(candidate.clone());
-                seen.insert(candidate.clone());
+                used_ids.insert(candidate.to_ascii_lowercase());
+                seen.insert(candidate.to_ascii_lowercase());
                 candidate
             }
         };
@@ -532,8 +573,9 @@ pub struct BatchContext {
     pub registry: TargetRegistry,
 }
 
-fn selected_page_id(config_path: &str) -> Result<usize, String> {
+fn list_pages_snapshot(config_path: &str) -> Result<Vec<Page>, String> {
     let list_res = call_mcp_tool(config_path, "list_pages", serde_json::json!({}))?;
+    ensure_tool_success("list_pages", &list_res)?;
     let text = list_res
         .get("content")
         .and_then(|c| c.as_array())
@@ -541,11 +583,17 @@ fn selected_page_id(config_path: &str) -> Result<usize, String> {
         .and_then(|obj| obj.get("text"))
         .and_then(|t| t.as_str())
         .ok_or_else(|| format!("Invalid list_pages response structure: {:?}", list_res))?;
-    parse_pages(text)
+    Ok(parse_pages(text))
+}
+
+/// The currently selected page, read *without* selecting anything first.
+/// Used to verify that the selection still points at a job's own page
+/// after multi-call helpers that may have survived an MCP session reset.
+fn current_selected_page_id(config_path: &str) -> Result<Option<usize>, String> {
+    Ok(list_pages_snapshot(config_path)?
         .into_iter()
         .find(|page| page.selected)
-        .map(|page| page.id)
-        .ok_or_else(|| "no selected page after opening the job tab".to_string())
+        .map(|page| page.id))
 }
 
 fn current_page_url(config_path: &str) -> Option<String> {
@@ -587,7 +635,43 @@ fn run_on_page<T>(
     with_target_page(&ctx.config_path, page_id, ctx.headless, f)
 }
 
+/// Run one job end to end. This wrapper owns the two cross-cutting
+/// concerns that must happen exactly once per job: persisting the final
+/// metadata (a persistence failure turns a Completed job into Failed —
+/// a job whose outcome cannot be recorded was not successful) and tab
+/// cleanup (every terminal state closes the job's tab except Recoverable,
+/// whose tab stays open for manual recovery; retention is bounded by the
+/// number of ambiguous submissions).
 pub fn run_job(ctx: &BatchContext, job: &JobSpec) -> JobOutcome {
+    let (mut outcome, provider) = run_job_inner(ctx, job);
+    if let Err(e) = write_job_metadata(ctx, job, provider, &outcome) {
+        let persist_error = format!("failed to persist metadata.json: {}", e);
+        if outcome.terminal == JobTerminal::Completed {
+            outcome.terminal = JobTerminal::Failed;
+            outcome.error = Some(persist_error);
+        } else {
+            outcome.note = Some(match outcome.note.take() {
+                Some(note) => format!("{}; {}", note, persist_error),
+                None => persist_error,
+            });
+        }
+    }
+    if let Some(page_id) = outcome.page_id
+        && outcome.terminal != JobTerminal::Recoverable
+    {
+        let _ = with_control_lock(|| {
+            call_mcp_tool(
+                &ctx.config_path,
+                "close_page",
+                serde_json::json!({ "pageId": page_id }),
+            )?;
+            Ok(())
+        });
+    }
+    outcome
+}
+
+fn run_job_inner(ctx: &BatchContext, job: &JobSpec) -> (JobOutcome, Provider) {
     let started = Instant::now();
     let config_path = &ctx.config_path;
 
@@ -629,50 +713,76 @@ pub fn run_job(ctx: &BatchContext, job: &JobSpec) -> JobOutcome {
         None
     };
     if let Some(error) = early_error {
-        let mut outcome = JobOutcome::failed(&job.id, error, started);
-        outcome.elapsed = started.elapsed();
-        write_job_metadata(ctx, job, provider, &outcome);
-        return outcome;
+        return (JobOutcome::failed(&job.id, error, started), provider);
     }
     let selection_plan = selection_plan.expect("selection plan resolved");
 
     // Open the job's own tab and bind it in the registry. The whole
-    // open -> identify -> bind sequence holds the control lock, so no other
-    // job can interleave a tab creation or selection change.
-    let page_id = match with_control_lock(|| {
-        if let Some(url) = &session_url {
-            open_url_tab(config_path, provider, url, ctx.headless, ctx.verbose)?;
-        } else {
-            ensure_provider_tab_with_url(
+    // open -> verify -> bind sequence holds the control lock, so no other
+    // job can interleave a tab creation or selection change. The binding
+    // is verified against the before/after page diff (fail-closed), never
+    // inferred from whichever page happens to be selected afterwards: a
+    // helper that survived an MCP session reset could otherwise hand us
+    // a pre-existing tab.
+    let opened = with_control_lock(|| {
+        let pages_before = list_pages_snapshot(config_path)?;
+        // Always create a brand-new tab, including for session jobs:
+        // `open_url_tab` would instead navigate the browser's single
+        // blank/welcome page, leaving no new page for the binding
+        // verification below (and no isolation from that page).
+        let initial_url = match &session_url {
+            Some(url) => url.as_str(),
+            None if job.temporary => provider.temporary_start_url(),
+            None => provider.home_url(),
+        };
+        ensure_provider_tab_with_url(
+            config_path,
+            provider,
+            true,
+            ctx.headless,
+            ctx.verbose,
+            initial_url,
+        )?;
+        let pages_after = list_pages_snapshot(config_path)?;
+        let new_page_id = unique_new_page_id(&pages_before, &pages_after)?;
+        let selected = pages_after
+            .iter()
+            .find(|page| page.selected)
+            .map(|page| page.id);
+        if selected != Some(new_page_id) {
+            // The diff proves this tab was created by the open above (all
+            // batch tab creation is serialized by the control lock), so
+            // close it instead of leaking it with the refused binding.
+            let _ = call_mcp_tool(
                 config_path,
-                provider,
-                true,
-                ctx.headless,
-                ctx.verbose,
-                if job.temporary {
-                    provider.temporary_start_url()
-                } else {
-                    provider.home_url()
-                },
-            )?;
+                "close_page",
+                serde_json::json!({ "pageId": new_page_id }),
+            );
+            return Err(format!(
+                "opened tab verification failed: new page {} is not the selected page ({:?}); refusing to bind",
+                new_page_id, selected
+            ));
         }
-        let page_id = selected_page_id(config_path)?;
-        ctx.registry.bind(&job.id, page_id)?;
-        Ok(page_id)
-    }) {
-        Ok(page_id) => page_id,
+        ctx.registry.bind(&job.id, new_page_id)?;
+        let initial_url = current_page_url(config_path);
+        Ok((new_page_id, initial_url))
+    });
+    let (page_id, initial_url) = match opened {
+        Ok(pair) => pair,
         Err(e) => {
-            let outcome =
-                JobOutcome::failed(&job.id, format!("failed to open tab: {}", e), started);
-            write_job_metadata(ctx, job, provider, &outcome);
-            return outcome;
+            return (
+                JobOutcome::failed(&job.id, format!("failed to open tab: {}", e), started),
+                provider,
+            );
         }
     };
     let mut outcome = JobOutcome {
         id: job.id.clone(),
         terminal: JobTerminal::Failed,
         page_id: Some(page_id),
-        thread_url: None,
+        // A resumed session's URL is known before submission; keep it from
+        // the start so a failed submission never loses the recovery link.
+        thread_url: session_url.clone().or(initial_url),
         error: None,
         note: None,
         elapsed: Duration::ZERO,
@@ -682,8 +792,7 @@ pub fn run_job(ctx: &BatchContext, job: &JobSpec) -> JobOutcome {
             if let Err(e) = run_on_page(ctx, page_id, || $body) {
                 outcome.error = Some(e);
                 outcome.elapsed = started.elapsed();
-                write_job_metadata(ctx, job, provider, &outcome);
-                return outcome;
+                return (outcome, provider);
             }
         };
     }
@@ -751,9 +860,17 @@ pub fn run_job(ctx: &BatchContext, job: &JobSpec) -> JobOutcome {
             JobTerminal::Failed
         };
         outcome.error = Some(format!("prompt submission failed: {}", e));
+        // Best effort: refresh the recovery link from the job's own page
+        // (its identity is verified by the registry binding). Never resend.
+        let _ = run_on_page(ctx, page_id, || {
+            if let Some(url) = current_page_url(config_path) {
+                ctx.registry.set_thread_url(&job.id, &url);
+                outcome.thread_url = Some(url);
+            }
+            Ok(())
+        });
         outcome.elapsed = started.elapsed();
-        write_job_metadata(ctx, job, provider, &outcome);
-        return outcome;
+        return (outcome, provider);
     }
 
     // Record the thread URL as early as possible for recovery, and persist
@@ -782,10 +899,32 @@ pub fn run_job(ctx: &BatchContext, job: &JobSpec) -> JobOutcome {
             continue;
         }
         let poll = run_on_page(ctx, page_id, || {
-            poll_response_once(config_path, provider, initial_count)
+            let parsed = poll_response_once(config_path, provider, initial_count)?;
+            let url = current_page_url(config_path);
+            Ok((parsed, url))
         });
+        // Mirror the single-prompt flow: a poll that returns after the
+        // deadline does not count, even if it reports completion.
+        if wait_started.elapsed() >= wait_timeout {
+            break;
+        }
         match poll {
-            Ok(Some(parsed)) => {
+            Ok((Some(parsed), url)) => {
+                // The conversation URL often appears only after generation
+                // starts; keep the recovery metadata current while waiting.
+                if let Some(url) = url
+                    && outcome.thread_url.as_deref() != Some(url.as_str())
+                {
+                    ctx.registry.set_thread_url(&job.id, &url);
+                    outcome.thread_url = Some(url);
+                    write_provisional_metadata(
+                        ctx,
+                        job,
+                        provider,
+                        page_id,
+                        outcome.thread_url.as_deref(),
+                    );
+                }
                 if provider == Provider::ChatGpt {
                     image_state.observe(&parsed);
                 }
@@ -801,7 +940,7 @@ pub fn run_job(ctx: &BatchContext, job: &JobSpec) -> JobOutcome {
                     stable_done_checks = 0;
                 }
             }
-            Ok(None) => stable_done_checks = 0,
+            Ok((None, _)) => stable_done_checks = 0,
             Err(_) => stable_done_checks = 0,
         }
     }
@@ -820,34 +959,49 @@ pub fn run_job(ctx: &BatchContext, job: &JobSpec) -> JobOutcome {
             Ok(())
         });
         outcome.elapsed = started.elapsed();
-        write_job_metadata(ctx, job, provider, &outcome);
-        return outcome;
+        return (outcome, provider);
     }
 
     if let Err(e) = image_state.ensure_completed(true) {
         outcome.error = Some(e);
         outcome.elapsed = started.elapsed();
-        write_job_metadata(ctx, job, provider, &outcome);
-        return outcome;
+        return (outcome, provider);
     }
 
-    // Extract the response on the job's own page (the clipboard sequence is
-    // atomic under the control lock).
-    let mut markdown = String::new();
-    step!(match copy_latest_markdown(config_path, provider) {
-        Ok(content) => {
-            markdown = content;
-            Ok(())
+    // Extract the response on the job's own page. Extraction and its
+    // verification must share one locked section: the extractor's internal
+    // retries can survive an MCP session reset (after which the selection
+    // may point at another page), but in concurrent runs other jobs also
+    // legitimately change the selection *between* locked sections — only
+    // a selection change inside this section means the extracted content
+    // cannot be trusted.
+    let extraction = with_control_lock(|| {
+        select_page(config_path, page_id, ctx.headless)?;
+        let content = copy_latest_markdown(config_path, provider)
+            .map_err(|e| format!("failed to extract response: {}", e))?;
+        if current_selected_page_id(config_path)? != Some(page_id) {
+            return Err(
+                "page selection changed during response extraction; the extracted response was discarded"
+                    .to_string(),
+            );
         }
-        Err(e) => Err(format!("failed to extract response: {}", e)),
+        Ok(content)
     });
+    let mut markdown = String::new();
+    match extraction {
+        Ok(content) => markdown = content,
+        Err(e) => {
+            outcome.error = Some(e);
+            outcome.elapsed = started.elapsed();
+            return (outcome, provider);
+        }
+    }
 
     let job_dir = job_output_dir(&ctx.output_dir, &job.id);
     if let Err(e) = write_atomic(&job_dir.join("response.md"), markdown.as_bytes()) {
         outcome.error = Some(e);
         outcome.elapsed = started.elapsed();
-        write_job_metadata(ctx, job, provider, &outcome);
-        return outcome;
+        return (outcome, provider);
     }
 
     if job.download_images {
@@ -880,25 +1034,9 @@ pub fn run_job(ctx: &BatchContext, job: &JobSpec) -> JobOutcome {
 
     outcome.terminal = JobTerminal::Completed;
     outcome.elapsed = started.elapsed();
-    write_job_metadata(ctx, job, provider, &outcome);
-
-    // Completed jobs close their own tab so the tab count stays bounded by
-    // the concurrency level instead of by the total job count.
-    let _ = with_control_lock(|| {
-        call_mcp_tool(
-            config_path,
-            "close_page",
-            serde_json::json!({ "pageId": page_id }),
-        )?;
-        Ok(())
-    });
-    outcome
+    (outcome, provider)
 }
 
-/// Write a provisional `metadata.json` right after submission, so even if
-/// the batch process is killed mid-generation the job leaves behind its
-/// page binding and thread URL for manual recovery. The terminal metadata
-/// write replaces this file atomically.
 fn write_provisional_metadata(
     ctx: &BatchContext,
     job: &JobSpec,
@@ -925,12 +1063,12 @@ fn write_job_metadata(
     _job: &JobSpec,
     provider: Provider,
     outcome: &JobOutcome,
-) {
+) -> Result<(), String> {
     let path = job_output_dir(&ctx.output_dir, &outcome.id).join("metadata.json");
-    let _ = write_atomic(
+    write_atomic(
         path.as_path(),
         outcome_metadata(outcome, provider).as_bytes(),
-    );
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -940,7 +1078,11 @@ fn write_job_metadata(
 /// Read and validate the batch inputs (jobs file/stdin and the concurrency
 /// gate) *before* any browser startup, so configuration errors fail fast
 /// without launching Chrome.
-pub fn prepare_batch(input: Option<&str>, concurrency: u32) -> Result<Vec<JobSpec>, String> {
+pub fn prepare_batch(
+    input: Option<&str>,
+    concurrency: u32,
+    default_provider: Provider,
+) -> Result<Vec<JobSpec>, String> {
     if concurrency == 0 {
         return Err("batch --concurrency must be at least 1".to_string());
     }
@@ -955,7 +1097,89 @@ pub fn prepare_batch(input: Option<&str>, concurrency: u32) -> Result<Vec<JobSpe
         Some(path) => std::fs::read_to_string(path)
             .map_err(|e| format!("Failed to read jobs file {}: {}", path, e))?,
     };
-    parse_jobs_jsonl(&input_text)
+    let jobs = parse_jobs_jsonl(&input_text)?;
+    // Full preflight: resolve every job's effective provider (including
+    // session targets) and validate attachments and selection plans now,
+    // so a configuration error anywhere in the file aborts the batch
+    // before Chrome starts — not after earlier prompts were already sent.
+    let mut conversation_owners: HashMap<String, String> = HashMap::new();
+    for job in &jobs {
+        let (provider, session_url) = validate_job_preflight(job, default_provider)
+            .map_err(|e| format!("job \"{}\": {}", job.id, e))?;
+        // Two jobs pointing at the same existing conversation cannot be
+        // isolated from each other: each opens its own tab onto the same
+        // remote thread, and completion/extraction cannot tell their
+        // replies apart. Sequential execution (concurrency 1) keeps the
+        // user's explicit ordering; parallel duplicates are rejected.
+        if concurrency > 1
+            && let Some(url) = session_url
+        {
+            let key = conversation_key(provider, &url);
+            if let Some(owner) = conversation_owners.get(&key) {
+                return Err(format!(
+                    "jobs \"{}\" and \"{}\" both target the same conversation ({}); duplicate sessions are only allowed with --concurrency 1",
+                    owner, job.id, url
+                ));
+            }
+            conversation_owners.insert(key, job.id.clone());
+        }
+    }
+    Ok(jobs)
+}
+
+/// Identity of an existing conversation for duplicate detection. The
+/// conversation ID lives in the URL path for every provider, while query
+/// strings and fragments are presentation state: `…/c/<id>` and
+/// `…/c/<id>#reply` are the same conversation and must dedupe together.
+fn conversation_key(provider: Provider, url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(parsed) => format!(
+            "{}:{}://{}{}",
+            provider,
+            parsed.scheme(),
+            parsed.host_str().unwrap_or_default(),
+            parsed.path()
+        ),
+        Err(_) => format!("{}:{}", provider, url),
+    }
+}
+
+/// Validate everything about a job that does not need a browser: the
+/// effective provider (a session may dictate it), provider-specific
+/// attachment support, and the model/reasoning selection plan.
+fn validate_job_preflight(
+    job: &JobSpec,
+    default_provider: Provider,
+) -> Result<(Provider, Option<String>), String> {
+    let mut provider = job.provider.unwrap_or(default_provider);
+    let mut session_url = None;
+    if let Some(session) = &job.session {
+        let (session_provider, url) =
+            resolve_session_target(provider, job.provider.is_some(), session)?;
+        provider = session_provider;
+        session_url = Some(url);
+    }
+    if provider == Provider::Gemini && !job.images.is_empty() {
+        return Err(
+            "Gemini image attachments are not supported yet; use \"files\" for Gemini".to_string(),
+        );
+    }
+    // Attachment paths are configuration too: a missing file must abort
+    // the batch here, not after Chrome started and earlier prompts were
+    // already sent.
+    for attachment in job.images.iter().chain(job.files.iter()) {
+        match std::fs::metadata(attachment) {
+            Ok(meta) if meta.is_file() => {}
+            _ => {
+                return Err(format!(
+                    "attachment file not found or not a regular file: {}",
+                    attachment
+                ));
+            }
+        }
+    }
+    resolve_selection_plan(provider, job.model.as_deref(), job.reasoning.as_deref())?;
+    Ok((provider, session_url))
 }
 
 /// Options for [`run_batch_command`], bundled to keep the call site clear.
@@ -1012,6 +1236,7 @@ pub fn run_batch_command(
         "[batch] max in-flight jobs observed: {}",
         stats.max_in_flight
     );
+    let mut metadata_failed = false;
     for (job, outcome) in jobs.iter().zip(&outcomes) {
         match outcome.terminal {
             JobTerminal::Completed => println!(
@@ -1024,7 +1249,13 @@ pub fn run_batch_command(
             ),
             JobTerminal::Cancelled => {
                 let provider = job.provider.unwrap_or(default_provider);
-                write_job_metadata(&ctx, job, provider, outcome);
+                if let Err(e) = write_job_metadata(&ctx, job, provider, outcome) {
+                    eprintln!(
+                        "[batch] job {}: failed to persist metadata.json: {}",
+                        outcome.id, e
+                    );
+                    metadata_failed = true;
+                }
                 println!("[batch] job {}: cancelled", outcome.id);
             }
             _ => println!(
@@ -1036,7 +1267,11 @@ pub fn run_batch_command(
         }
     }
     println!("[batch] summary\n{}", summary.render());
-    Ok(summary.exit_code())
+    Ok(if metadata_failed {
+        1
+    } else {
+        summary.exit_code()
+    })
 }
 
 #[cfg(test)]
@@ -1263,7 +1498,8 @@ mod tests {
 
     #[test]
     fn prepare_batch_rejects_zero_concurrency_before_reading_input() {
-        let err = prepare_batch(Some("/definitely/missing.jsonl"), 0).unwrap_err();
+        let err =
+            prepare_batch(Some("/definitely/missing.jsonl"), 0, Provider::ChatGpt).unwrap_err();
         assert!(err.contains("concurrency"), "unexpected error: {}", err);
     }
 
@@ -1272,7 +1508,7 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("ask-bridge-jobs-{}.jsonl", std::process::id()));
         std::fs::write(&path, "{\"prompt\":\"a\"}\n{\"prompt\":\"b\"}\n").unwrap();
-        let jobs = prepare_batch(Some(path.to_str().unwrap()), 4).unwrap();
+        let jobs = prepare_batch(Some(path.to_str().unwrap()), 4, Provider::ChatGpt).unwrap();
         assert_eq!(jobs.len(), 2);
         let _ = std::fs::remove_file(&path);
     }
@@ -1292,6 +1528,134 @@ mod tests {
             .collect();
         assert!(leftovers.is_empty());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn rejects_case_insensitive_id_collisions_and_reserved_names() {
+        // Job-1 vs job-1 would share a directory on case-insensitive filesystems.
+        assert!(
+            parse_jobs_jsonl(
+                "{\"id\":\"Job-1\",\"prompt\":\"x\"}\n{\"id\":\"job-1\",\"prompt\":\"y\"}"
+            )
+            .is_err()
+        );
+        // Windows reserved device names and trailing dots.
+        for bad in ["CON", "nul.txt", "COM1", "lpt9.md", "job."] {
+            assert!(
+                parse_jobs_jsonl(&format!("{{\"id\":\"{}\",\"prompt\":\"x\"}}", bad)).is_err(),
+                "id {} should be rejected",
+                bad
+            );
+        }
+        // Lookalikes that are fine.
+        for good in ["console", "con-1", "com10", "job.1"] {
+            assert!(
+                parse_jobs_jsonl(&format!("{{\"id\":\"{}\",\"prompt\":\"x\"}}", good)).is_ok(),
+                "id {} should be accepted",
+                good
+            );
+        }
+    }
+
+    #[test]
+    fn tool_level_errors_are_detected_in_results() {
+        let ok = serde_json::json!({"content": [{"type": "text", "text": "done"}]});
+        assert!(ensure_tool_success("select_page", &ok).is_ok());
+        let err = serde_json::json!({
+            "isError": true,
+            "content": [{"type": "text", "text": "No page with id 9"}]
+        });
+        let message = ensure_tool_success("select_page", &err).unwrap_err();
+        assert!(message.contains("select_page failed"));
+        assert!(message.contains("No page with id 9"));
+    }
+
+    #[test]
+    fn preflight_rejects_parallel_duplicate_sessions_only() {
+        let path = std::env::temp_dir().join(format!(
+            "ask-bridge-dup-session-{}.jsonl",
+            std::process::id()
+        ));
+        let url = "https://chatgpt.com/c/12345678-1234-1234-1234-123456789012";
+        std::fs::write(
+            &path,
+            format!(
+                "{{\"prompt\":\"a\",\"session\":\"{}\"}}\n{{\"prompt\":\"b\",\"session\":\"{}\"}}\n",
+                url, url
+            ),
+        )
+        .unwrap();
+        // Parallel: rejected, the two jobs cannot be isolated.
+        let err = prepare_batch(Some(path.to_str().unwrap()), 2, Provider::ChatGpt).unwrap_err();
+        assert!(
+            err.contains("same conversation"),
+            "unexpected error: {}",
+            err
+        );
+        // Sequential: allowed, the ordering is the user's explicit choice.
+        let jobs = prepare_batch(Some(path.to_str().unwrap()), 1, Provider::ChatGpt).unwrap();
+        assert_eq!(jobs.len(), 2);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn duplicate_session_keys_ignore_query_and_fragment() {
+        let base = "https://chatgpt.com/c/12345678-1234-1234-1234-123456789012";
+        let key = conversation_key(Provider::ChatGpt, base);
+        assert_eq!(
+            key,
+            conversation_key(Provider::ChatGpt, &format!("{}#reply", base))
+        );
+        assert_eq!(
+            key,
+            conversation_key(Provider::ChatGpt, &format!("{}?foo=bar", base))
+        );
+        assert_ne!(
+            key,
+            conversation_key(
+                Provider::ChatGpt,
+                "https://chatgpt.com/c/99999999-9999-9999-9999-999999999999"
+            )
+        );
+    }
+
+    #[test]
+    fn preflight_rejects_missing_attachment_paths() {
+        let path = std::env::temp_dir().join(format!(
+            "ask-bridge-attach-preflight-{}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "{\"prompt\":\"x\",\"files\":[\"/definitely/missing-ask-bridge.bin\"]}\n",
+        )
+        .unwrap();
+        let err = prepare_batch(Some(path.to_str().unwrap()), 1, Provider::ChatGpt).unwrap_err();
+        assert!(
+            err.contains("missing-ask-bridge.bin"),
+            "unexpected error: {}",
+            err
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn preflight_catches_default_provider_and_selection_errors() {
+        // Job omits provider; the default (Gemini) makes its images invalid.
+        let path =
+            std::env::temp_dir().join(format!("ask-bridge-preflight-{}.jsonl", std::process::id()));
+        std::fs::write(&path, "{\"prompt\":\"x\",\"images\":[\"a.png\"]}\n").unwrap();
+        let err = prepare_batch(Some(path.to_str().unwrap()), 1, Provider::Gemini).unwrap_err();
+        assert!(err.contains("Gemini"), "unexpected error: {}", err);
+        // Claude rejects reasoning values; that must surface at preflight too.
+        std::fs::write(
+            &path,
+            "{\"provider\":\"claude\",\"prompt\":\"x\",\"reasoning\":\"high\"}\n",
+        )
+        .unwrap();
+        let err = prepare_batch(Some(path.to_str().unwrap()), 1, Provider::ChatGpt).unwrap_err();
+        assert!(err.contains("Claude"), "unexpected error: {}", err);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
