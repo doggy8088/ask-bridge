@@ -24,6 +24,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 pub const DEFAULT_JOB_TIMEOUT_SECS: u64 = 300;
@@ -289,6 +290,8 @@ impl TargetRegistry {
         }
     }
 
+    /// Read back a binding (used by tests and recovery tooling).
+    #[allow(dead_code)]
     pub fn get(&self, job_id: &str) -> Option<TargetBinding> {
         let map = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         map.get(job_id).cloned()
@@ -441,28 +444,79 @@ fn outcome_metadata(outcome: &JobOutcome, provider: Provider) -> String {
 // Sequential execution core (generic over the executor for unit tests)
 // ---------------------------------------------------------------------------
 
-pub fn execute_batch_sequential(
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct BatchRunStats {
+    /// Peak number of jobs executing at the same time, as observed by the
+    /// scheduler. Never exceeds the requested concurrency.
+    pub max_in_flight: usize,
+}
+
+/// Run all jobs through a bounded worker pool. At most `concurrency` jobs
+/// execute at once; job execution itself is delegated to `executor`, which
+/// must be safe to call from multiple threads. Outcomes are returned in
+/// input order regardless of completion order.
+pub fn execute_batch(
     jobs: &[JobSpec],
+    concurrency: usize,
     fail_fast: bool,
-    mut executor: impl FnMut(&JobSpec) -> JobOutcome,
-) -> (Vec<JobOutcome>, BatchSummary) {
-    let mut outcomes = Vec::with_capacity(jobs.len());
-    let mut summary = BatchSummary::default();
-    let mut stopped = false;
-    for job in jobs {
-        let outcome = if stopped {
-            JobOutcome::cancelled(&job.id)
-        } else {
-            let outcome = executor(job);
-            if fail_fast && outcome.terminal != JobTerminal::Completed {
-                stopped = true;
+    executor: &(dyn Fn(&JobSpec) -> JobOutcome + Sync),
+) -> (Vec<JobOutcome>, BatchSummary, BatchRunStats) {
+    let concurrency = concurrency.max(1);
+    let slots: Vec<Mutex<Option<JobOutcome>>> = jobs.iter().map(|_| Mutex::new(None)).collect();
+    let next = AtomicUsize::new(0);
+    let stop = AtomicBool::new(false);
+    let in_flight = AtomicUsize::new(0);
+    let peak = AtomicUsize::new(0);
+
+    if !jobs.is_empty() {
+        let worker_count = concurrency.min(jobs.len());
+        std::thread::scope(|scope| {
+            for _ in 0..worker_count {
+                scope.spawn(|| {
+                    loop {
+                        let idx = next.fetch_add(1, Ordering::SeqCst);
+                        if idx >= jobs.len() {
+                            break;
+                        }
+                        let job = &jobs[idx];
+                        let outcome = if stop.load(Ordering::SeqCst) {
+                            JobOutcome::cancelled(&job.id)
+                        } else {
+                            let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                            peak.fetch_max(now, Ordering::SeqCst);
+                            let outcome = executor(job);
+                            in_flight.fetch_sub(1, Ordering::SeqCst);
+                            if fail_fast && outcome.terminal != JobTerminal::Completed {
+                                stop.store(true, Ordering::SeqCst);
+                            }
+                            outcome
+                        };
+                        *slots[idx].lock().unwrap_or_else(|p| p.into_inner()) = Some(outcome);
+                    }
+                });
             }
-            outcome
-        };
-        summary.record(outcome.terminal);
-        outcomes.push(outcome);
+        });
     }
-    (outcomes, summary)
+
+    let outcomes: Vec<JobOutcome> = slots
+        .into_iter()
+        .map(|slot| {
+            slot.into_inner()
+                .unwrap_or_else(|p| p.into_inner())
+                .expect("every job produced an outcome")
+        })
+        .collect();
+    let mut summary = BatchSummary::default();
+    for outcome in &outcomes {
+        summary.record(outcome.terminal);
+    }
+    (
+        outcomes,
+        summary,
+        BatchRunStats {
+            max_in_flight: peak.load(Ordering::SeqCst),
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -702,7 +756,8 @@ pub fn run_job(ctx: &BatchContext, job: &JobSpec) -> JobOutcome {
         return outcome;
     }
 
-    // Record the thread URL as early as possible for recovery.
+    // Record the thread URL as early as possible for recovery, and persist
+    // a provisional metadata file in case the process dies mid-generation.
     let _ = run_on_page(ctx, page_id, || {
         if let Some(url) = current_page_url(config_path) {
             ctx.registry.set_thread_url(&job.id, &url);
@@ -710,6 +765,7 @@ pub fn run_job(ctx: &BatchContext, job: &JobSpec) -> JobOutcome {
         }
         Ok(())
     });
+    write_provisional_metadata(ctx, job, provider, page_id, outcome.thread_url.as_deref());
 
     // Wait for completion, polling only inside short locked sections so
     // other jobs keep making progress between polls.
@@ -722,7 +778,7 @@ pub fn run_job(ctx: &BatchContext, job: &JobSpec) -> JobOutcome {
     while wait_started.elapsed() < wait_timeout {
         std::thread::sleep(Duration::from_millis(100));
         cycles += 1;
-        if cycles % 5 != 0 {
+        if !cycles.is_multiple_of(5) {
             continue;
         }
         let poll = run_on_page(ctx, page_id, || {
@@ -839,6 +895,31 @@ pub fn run_job(ctx: &BatchContext, job: &JobSpec) -> JobOutcome {
     outcome
 }
 
+/// Write a provisional `metadata.json` right after submission, so even if
+/// the batch process is killed mid-generation the job leaves behind its
+/// page binding and thread URL for manual recovery. The terminal metadata
+/// write replaces this file atomically.
+fn write_provisional_metadata(
+    ctx: &BatchContext,
+    job: &JobSpec,
+    provider: Provider,
+    page_id: usize,
+    thread_url: Option<&str>,
+) {
+    let value = serde_json::json!({
+        "id": job.id,
+        "provider": provider.to_string(),
+        "pageId": page_id,
+        "threadUrl": thread_url,
+        "state": "in_progress",
+        "elapsedSeconds": null,
+        "error": null,
+        "note": "provisional metadata written after submission; replaced when the job reaches a terminal state",
+    });
+    let path = job_output_dir(&ctx.output_dir, &job.id).join("metadata.json");
+    let _ = write_atomic(path.as_path(), value.to_string().as_bytes());
+}
+
 fn write_job_metadata(
     ctx: &BatchContext,
     _job: &JobSpec,
@@ -860,11 +941,8 @@ fn write_job_metadata(
 /// gate) *before* any browser startup, so configuration errors fail fast
 /// without launching Chrome.
 pub fn prepare_batch(input: Option<&str>, concurrency: u32) -> Result<Vec<JobSpec>, String> {
-    if concurrency != 1 {
-        return Err(
-            "batch --concurrency greater than 1 is not enabled yet; run with --concurrency 1"
-                .to_string(),
-        );
+    if concurrency == 0 {
+        return Err("batch --concurrency must be at least 1".to_string());
     }
     let input_text = match input {
         Some("-") | None => {
@@ -880,22 +958,35 @@ pub fn prepare_batch(input: Option<&str>, concurrency: u32) -> Result<Vec<JobSpe
     parse_jobs_jsonl(&input_text)
 }
 
+/// Options for [`run_batch_command`], bundled to keep the call site clear.
+pub struct BatchCommandArgs {
+    pub default_provider: Provider,
+    pub headless: bool,
+    pub verbose: bool,
+    pub concurrency: u32,
+    pub output_dir: String,
+    pub fail_fast: bool,
+}
+
 pub fn run_batch_command(
     config_path: &str,
-    default_provider: Provider,
-    headless: bool,
-    verbose: bool,
+    args: BatchCommandArgs,
     jobs: Vec<JobSpec>,
-    concurrency: u32,
-    output_dir: &str,
-    fail_fast: bool,
 ) -> Result<i32, String> {
+    let BatchCommandArgs {
+        default_provider,
+        headless,
+        verbose,
+        concurrency,
+        output_dir,
+        fail_fast,
+    } = args;
     let ctx = BatchContext {
         config_path: config_path.to_string(),
         default_provider,
         headless,
         verbose,
-        output_dir: PathBuf::from(output_dir),
+        output_dir: PathBuf::from(&output_dir),
         registry: TargetRegistry::new(),
     };
     std::fs::create_dir_all(&ctx.output_dir).map_err(|e| {
@@ -911,10 +1002,16 @@ pub fn run_batch_command(
         jobs.len(),
         concurrency
     );
-    let (outcomes, summary) = execute_batch_sequential(&jobs, fail_fast, |job| {
+    let executor = |job: &JobSpec| {
         println!("[batch] job {}: running", job.id);
         run_job(&ctx, job)
-    });
+    };
+    let (outcomes, summary, stats) =
+        execute_batch(&jobs, concurrency as usize, fail_fast, &executor);
+    println!(
+        "[batch] max in-flight jobs observed: {}",
+        stats.max_in_flight
+    );
     for (job, outcome) in jobs.iter().zip(&outcomes) {
         match outcome.terminal {
             JobTerminal::Completed => println!(
@@ -1049,15 +1146,16 @@ mod tests {
     }
 
     #[test]
-    fn sequential_executor_honors_fail_fast_and_counts_summary() {
+    fn executor_with_concurrency_one_preserves_fail_fast_and_summary() {
         let jobs = vec![spec("a"), spec("b"), spec("c")];
-        let (outcomes, summary) = execute_batch_sequential(&jobs, true, |job| {
+        let executor = |job: &JobSpec| {
             if job.id == "b" {
                 outcome("b", JobTerminal::Failed)
             } else {
                 outcome(&job.id, JobTerminal::Completed)
             }
-        });
+        };
+        let (outcomes, summary, stats) = execute_batch(&jobs, 1, true, &executor);
         assert_eq!(outcomes.len(), 3);
         assert_eq!(outcomes[2].terminal, JobTerminal::Cancelled);
         assert_eq!(summary.total, 3);
@@ -1065,11 +1163,118 @@ mod tests {
         assert_eq!(summary.failed, 1);
         assert_eq!(summary.cancelled, 1);
         assert_eq!(summary.exit_code(), 1);
+        assert_eq!(stats.max_in_flight, 1);
 
-        let (_, summary) =
-            execute_batch_sequential(&jobs, false, |job| outcome(&job.id, JobTerminal::Completed));
+        let executor = |job: &JobSpec| outcome(&job.id, JobTerminal::Completed);
+        let (_, summary, _) = execute_batch(&jobs, 1, false, &executor);
         assert_eq!(summary.completed, 3);
         assert_eq!(summary.exit_code(), 0);
+    }
+
+    #[test]
+    fn executor_never_exceeds_concurrency_cap() {
+        let jobs: Vec<JobSpec> = (0..12).map(|i| spec(&format!("j{}", i))).collect();
+        let current = AtomicUsize::new(0);
+        let observed_peak = AtomicUsize::new(0);
+        let executor = |job: &JobSpec| {
+            let now = current.fetch_add(1, Ordering::SeqCst) + 1;
+            observed_peak.fetch_max(now, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(30));
+            current.fetch_sub(1, Ordering::SeqCst);
+            outcome(&job.id, JobTerminal::Completed)
+        };
+        let (outcomes, summary, stats) = execute_batch(&jobs, 3, false, &executor);
+        assert_eq!(summary.completed, 12);
+        assert!(
+            stats.max_in_flight <= 3,
+            "peak {} exceeded the cap",
+            stats.max_in_flight
+        );
+        assert_eq!(stats.max_in_flight, observed_peak.load(Ordering::SeqCst));
+        for (job, outcome) in jobs.iter().zip(&outcomes) {
+            assert_eq!(outcome.id, job.id);
+        }
+    }
+
+    #[test]
+    fn executor_actually_runs_jobs_concurrently() {
+        // Three jobs rendezvous on a barrier: only a truly concurrent
+        // scheduler can release it. A watchdog turns a regression to
+        // sequential execution into a failure instead of a hang.
+        let jobs = vec![spec("a"), spec("b"), spec("c")];
+        let barrier = std::sync::Barrier::new(3);
+        let executor = move |job: &JobSpec| {
+            barrier.wait();
+            outcome(&job.id, JobTerminal::Completed)
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (_, summary, _) = execute_batch(&jobs, 3, false, &executor);
+            let _ = tx.send(summary.completed);
+        });
+        let completed = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("scheduler did not run 3 jobs concurrently");
+        assert_eq!(completed, 3);
+    }
+
+    #[test]
+    fn executor_thousand_fake_jobs_have_no_cross_contamination() {
+        let jobs: Vec<JobSpec> = (0..1000).map(|i| spec(&format!("job-{:04}", i))).collect();
+        let executor = |job: &JobSpec| {
+            let mut outcome = outcome(&job.id, JobTerminal::Completed);
+            outcome.thread_url = Some(format!("https://example.test/{}", job.id));
+            outcome
+        };
+        let (outcomes, summary, stats) = execute_batch(&jobs, 8, false, &executor);
+        assert_eq!(summary.total, 1000);
+        assert_eq!(summary.completed, 1000);
+        assert!(stats.max_in_flight <= 8);
+        for (job, outcome) in jobs.iter().zip(&outcomes) {
+            assert_eq!(outcome.id, job.id);
+            assert_eq!(
+                outcome.thread_url.as_deref(),
+                Some(format!("https://example.test/{}", job.id).as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn executor_fail_fast_cancels_unstarted_jobs() {
+        let jobs: Vec<JobSpec> = (0..6).map(|i| spec(&format!("j{}", i))).collect();
+        let executor = |job: &JobSpec| {
+            if job.id == "j0" {
+                outcome("j0", JobTerminal::Failed)
+            } else {
+                std::thread::sleep(Duration::from_millis(50));
+                outcome(&job.id, JobTerminal::Completed)
+            }
+        };
+        let (_, summary, _) = execute_batch(&jobs, 2, true, &executor);
+        assert_eq!(summary.total, 6);
+        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.completed + summary.cancelled, 5);
+        assert!(
+            summary.cancelled >= 3,
+            "expected most unstarted jobs to be cancelled, got {}",
+            summary.cancelled
+        );
+    }
+
+    #[test]
+    fn prepare_batch_rejects_zero_concurrency_before_reading_input() {
+        let err = prepare_batch(Some("/definitely/missing.jsonl"), 0).unwrap_err();
+        assert!(err.contains("concurrency"), "unexpected error: {}", err);
+    }
+
+    #[test]
+    fn prepare_batch_accepts_concurrency_above_one() {
+        let path =
+            std::env::temp_dir().join(format!("ask-bridge-jobs-{}.jsonl", std::process::id()));
+        std::fs::write(&path, "{\"prompt\":\"a\"}\n{\"prompt\":\"b\"}\n").unwrap();
+        let jobs = prepare_batch(Some(path.to_str().unwrap()), 4).unwrap();
+        assert_eq!(jobs.len(), 2);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

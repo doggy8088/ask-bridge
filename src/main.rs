@@ -8853,13 +8853,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .expect("batch jobs are prepared before Chrome startup");
                 match batch::run_batch_command(
                     &config_path,
-                    provider,
-                    is_headless,
-                    command_verbose,
+                    batch::BatchCommandArgs {
+                        default_provider: provider,
+                        headless: is_headless,
+                        verbose: command_verbose,
+                        concurrency,
+                        output_dir,
+                        fail_fast,
+                    },
                     jobs,
-                    concurrency,
-                    &output_dir,
-                    fail_fast,
                 ) {
                     Ok(code) => std::process::exit(code),
                     Err(e) => {
