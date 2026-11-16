@@ -14,10 +14,10 @@
 use super::{
     ChatGptImageResponseState, LoginState, Page, Provider, call_mcp_tool, check_login_status,
     copy_latest_markdown, download_images_from_latest_message, ensure_chatgpt_chat_mode,
-    ensure_provider_tab_with_url, ensure_temporary_chat, mcp_error_is_transport, open_url_tab,
-    parse_pages, parse_script_result, poll_response_once, resolve_selection_plan,
-    resolve_session_target, submit_prompt_to_provider, switch_model, switch_reasoning,
-    unique_new_page_id, upload_attachments_to_provider,
+    ensure_provider_tab_with_url, ensure_temporary_chat, mcp_error_is_transport, parse_pages,
+    parse_script_result, poll_response_once, resolve_selection_plan, resolve_session_target,
+    submit_prompt_to_provider, switch_model, switch_reasoning, unique_new_page_id,
+    upload_attachments_to_provider,
 };
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -726,22 +726,23 @@ fn run_job_inner(ctx: &BatchContext, job: &JobSpec) -> (JobOutcome, Provider) {
     // a pre-existing tab.
     let opened = with_control_lock(|| {
         let pages_before = list_pages_snapshot(config_path)?;
-        if let Some(url) = &session_url {
-            open_url_tab(config_path, provider, url, ctx.headless, ctx.verbose)?;
-        } else {
-            ensure_provider_tab_with_url(
-                config_path,
-                provider,
-                true,
-                ctx.headless,
-                ctx.verbose,
-                if job.temporary {
-                    provider.temporary_start_url()
-                } else {
-                    provider.home_url()
-                },
-            )?;
-        }
+        // Always create a brand-new tab, including for session jobs:
+        // `open_url_tab` would instead navigate the browser's single
+        // blank/welcome page, leaving no new page for the binding
+        // verification below (and no isolation from that page).
+        let initial_url = match &session_url {
+            Some(url) => url.as_str(),
+            None if job.temporary => provider.temporary_start_url(),
+            None => provider.home_url(),
+        };
+        ensure_provider_tab_with_url(
+            config_path,
+            provider,
+            true,
+            ctx.headless,
+            ctx.verbose,
+            initial_url,
+        )?;
         let pages_after = list_pages_snapshot(config_path)?;
         let new_page_id = unique_new_page_id(&pages_before, &pages_after)?;
         let selected = pages_after
@@ -959,28 +960,33 @@ fn run_job_inner(ctx: &BatchContext, job: &JobSpec) -> (JobOutcome, Provider) {
         return (outcome, provider);
     }
 
-    // Extract the response on the job's own page (the clipboard sequence is
-    // atomic under the control lock). The extractor's internal retries can
-    // survive an MCP session reset, after which the selection may point at
-    // another page; verify the selection still belongs to this job before
-    // trusting the extracted content.
-    let mut markdown = String::new();
-    step!(match copy_latest_markdown(config_path, provider) {
-        Ok(content) => {
-            markdown = content;
-            Ok(())
+    // Extract the response on the job's own page. Extraction and its
+    // verification must share one locked section: the extractor's internal
+    // retries can survive an MCP session reset (after which the selection
+    // may point at another page), but in concurrent runs other jobs also
+    // legitimately change the selection *between* locked sections — only
+    // a selection change inside this section means the extracted content
+    // cannot be trusted.
+    let extraction = with_control_lock(|| {
+        select_page(config_path, page_id, ctx.headless)?;
+        let content = copy_latest_markdown(config_path, provider)
+            .map_err(|e| format!("failed to extract response: {}", e))?;
+        if current_selected_page_id(config_path)? != Some(page_id) {
+            return Err(
+                "page selection changed during response extraction; the extracted response was discarded"
+                    .to_string(),
+            );
         }
-        Err(e) => Err(format!("failed to extract response: {}", e)),
+        Ok(content)
     });
-    let selection_intact =
-        with_control_lock(|| Ok(current_selected_page_id(config_path)? == Some(page_id)));
-    if selection_intact != Ok(true) {
-        outcome.error = Some(
-            "page selection changed during response extraction; the extracted response was discarded"
-                .to_string(),
-        );
-        outcome.elapsed = started.elapsed();
-        return (outcome, provider);
+    let mut markdown = String::new();
+    match extraction {
+        Ok(content) => markdown = content,
+        Err(e) => {
+            outcome.error = Some(e);
+            outcome.elapsed = started.elapsed();
+            return (outcome, provider);
+        }
     }
 
     let job_dir = job_output_dir(&ctx.output_dir, &job.id);
