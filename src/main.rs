@@ -8651,7 +8651,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         input, concurrency, ..
     }) = &cli.command
     {
-        match batch::prepare_batch(input.as_deref(), *concurrency) {
+        match batch::prepare_batch(input.as_deref(), *concurrency, provider) {
             Ok(jobs) => batch_jobs = Some(jobs),
             Err(e) => {
                 eprintln!("Error: {}", e);
