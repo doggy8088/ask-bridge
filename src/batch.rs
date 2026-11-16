@@ -750,6 +750,14 @@ fn run_job_inner(ctx: &BatchContext, job: &JobSpec) -> (JobOutcome, Provider) {
             .find(|page| page.selected)
             .map(|page| page.id);
         if selected != Some(new_page_id) {
+            // The diff proves this tab was created by the open above (all
+            // batch tab creation is serialized by the control lock), so
+            // close it instead of leaking it with the refused binding.
+            let _ = call_mcp_tool(
+                config_path,
+                "close_page",
+                serde_json::json!({ "pageId": new_page_id }),
+            );
             return Err(format!(
                 "opened tab verification failed: new page {} is not the selected page ({:?}); refusing to bind",
                 new_page_id, selected
@@ -1106,7 +1114,7 @@ pub fn prepare_batch(
         if concurrency > 1
             && let Some(url) = session_url
         {
-            let key = format!("{}:{}", provider, url);
+            let key = conversation_key(provider, &url);
             if let Some(owner) = conversation_owners.get(&key) {
                 return Err(format!(
                     "jobs \"{}\" and \"{}\" both target the same conversation ({}); duplicate sessions are only allowed with --concurrency 1",
@@ -1117,6 +1125,23 @@ pub fn prepare_batch(
         }
     }
     Ok(jobs)
+}
+
+/// Identity of an existing conversation for duplicate detection. The
+/// conversation ID lives in the URL path for every provider, while query
+/// strings and fragments are presentation state: `…/c/<id>` and
+/// `…/c/<id>#reply` are the same conversation and must dedupe together.
+fn conversation_key(provider: Provider, url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(parsed) => format!(
+            "{}:{}://{}{}",
+            provider,
+            parsed.scheme(),
+            parsed.host_str().unwrap_or_default(),
+            parsed.path()
+        ),
+        Err(_) => format!("{}:{}", provider, url),
+    }
 }
 
 /// Validate everything about a job that does not need a browser: the
@@ -1138,6 +1163,20 @@ fn validate_job_preflight(
         return Err(
             "Gemini image attachments are not supported yet; use \"files\" for Gemini".to_string(),
         );
+    }
+    // Attachment paths are configuration too: a missing file must abort
+    // the batch here, not after Chrome started and earlier prompts were
+    // already sent.
+    for attachment in job.images.iter().chain(job.files.iter()) {
+        match std::fs::metadata(attachment) {
+            Ok(meta) if meta.is_file() => {}
+            _ => {
+                return Err(format!(
+                    "attachment file not found or not a regular file: {}",
+                    attachment
+                ));
+            }
+        }
     }
     resolve_selection_plan(provider, job.model.as_deref(), job.reasoning.as_deref())?;
     Ok((provider, session_url))
@@ -1556,6 +1595,47 @@ mod tests {
         // Sequential: allowed, the ordering is the user's explicit choice.
         let jobs = prepare_batch(Some(path.to_str().unwrap()), 1, Provider::ChatGpt).unwrap();
         assert_eq!(jobs.len(), 2);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn duplicate_session_keys_ignore_query_and_fragment() {
+        let base = "https://chatgpt.com/c/12345678-1234-1234-1234-123456789012";
+        let key = conversation_key(Provider::ChatGpt, base);
+        assert_eq!(
+            key,
+            conversation_key(Provider::ChatGpt, &format!("{}#reply", base))
+        );
+        assert_eq!(
+            key,
+            conversation_key(Provider::ChatGpt, &format!("{}?foo=bar", base))
+        );
+        assert_ne!(
+            key,
+            conversation_key(
+                Provider::ChatGpt,
+                "https://chatgpt.com/c/99999999-9999-9999-9999-999999999999"
+            )
+        );
+    }
+
+    #[test]
+    fn preflight_rejects_missing_attachment_paths() {
+        let path = std::env::temp_dir().join(format!(
+            "ask-bridge-attach-preflight-{}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "{\"prompt\":\"x\",\"files\":[\"/definitely/missing-ask-bridge.bin\"]}\n",
+        )
+        .unwrap();
+        let err = prepare_batch(Some(path.to_str().unwrap()), 1, Provider::ChatGpt).unwrap_err();
+        assert!(
+            err.contains("missing-ask-bridge.bin"),
+            "unexpected error: {}",
+            err
+        );
         let _ = std::fs::remove_file(&path);
     }
 
