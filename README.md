@@ -42,6 +42,7 @@
 - **模型與推理模式切換**：使用 `--model` 選模型，並以 `--reasoning` 分別控制 ChatGPT 推理強度或 Gemini 延伸思考。
 - **接續既有對話**：使用 `--session`、`--session-id` 或 `--session-url` 指定既有對話，再從終端機送出新的 prompt。
 - **臨時聊天**：使用 `--temporary` 建立不保留於一般聊天歷史的臨時對話（ChatGPT／Gemini 的 Temporary Chat、Claude 的 Incognito Chat）；送出前會先確認已進入臨時模式，無法確認時直接中止、不送出問題。
+- **批次執行**：使用 `ask-bridge batch` 以 JSONL 一次提交多個工作，每個工作使用獨立分頁與獨立輸出目錄，互不串線；結束時輸出各終態的統計摘要。
 - **回應超時**：使用 `--timeout <秒數>` 設定等待回應上限，預設為 `300` 秒。
 - **預設安靜模式與 verbose 模式**：預設只輸出最終回覆；加上 `--verbose` 可顯示背景瀏覽器控制流程。
 - **版本資訊**：使用 `-v` 或 `--version` 顯示目前版本號。
@@ -442,6 +443,44 @@ ask-bridge update
 ```
 
 此命令會依作業系統重新執行 README 建議的官方安裝命令（macOS / Linux 或 Windows）。
+
+### 15. 批次執行多個工作（`batch`）
+
+使用 `ask-bridge batch` 可一次提交多個彼此獨立的工作（issue #24）。每個
+工作會在自己的瀏覽器分頁中執行，輸出到獨立目錄，互不影響：
+
+```bash
+ask-bridge batch --input jobs.jsonl --output-dir results/
+cat jobs.jsonl | ask-bridge batch --output-dir results/
+```
+
+`jobs.jsonl` 為 JSONL 格式，一行一個工作物件：
+
+```json
+{"id":"job-1","provider":"chatgpt","prompt":"請只回覆 JOB-1"}
+{"id":"job-2","provider":"gemini","prompt":"請摘要這份文件","files":["report.pdf"],"timeout":600}
+```
+
+欄位說明：`id`（可省略，自動產生；限 `[A-Za-z0-9._-]`、不可重複）、
+`provider`（可省略，沿用全域設定）、`prompt`（必填）、`timeout`（秒，
+預設 300）、`session`（接續既有對話）、`temporary`（臨時聊天，不可與
+`session` 併用）、`model`／`reasoning`、`files`／`images` 附件、
+`downloadImages`（預設 `true`）。每個工作固定在自己的新分頁執行，
+`"new": false` 不被接受。
+
+每個工作的產出位於 `<output-dir>/<job-id>/`，包含 `response.md`、
+`metadata.json`（provider、分頁 ID、對話連結、終態與錯誤）與 `images/`
+（下載的生成圖片）；檔案以暫存檔寫入後原子改名，不會留下半成品。執行
+結束會輸出摘要（Total／Completed／Failed／Timed out／Recoverable／
+Cancelled）；任一工作未完成時結束代碼為 1。加上 `--fail-fast` 可在第一
+個未完成的工作後停止啟動後續工作（標記為 Cancelled）。
+
+若工作在送出 prompt 時遇到瀏覽器連線中斷，送出結果不明確，該工作會被
+標記為 `Recoverable` 並保留對話連結供人工恢復，**不會自動重送**，避免
+重複提問。
+
+目前 `--concurrency` 僅接受 `1`（循序執行，但已透過分頁綁定與控制鎖
+保證工作間隔離）；更高的並行度將在後續版本開放。
 
 ## 運作原理
 

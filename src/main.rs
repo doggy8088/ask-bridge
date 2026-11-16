@@ -19,6 +19,8 @@ use url::Url;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
+mod batch;
+
 const ASK_BRIDGE_CHROME_MARKER: &str = "--ask-bridge-instance";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -790,6 +792,29 @@ enum Commands {
     Config,
     /// Reinstall ask-bridge using the recommended README installation command
     Update,
+    /// Run multiple prompt jobs from a JSONL file, each in its own tab, with
+    /// per-job output directories (issue #24)
+    Batch {
+        /// Jobs file in JSONL format (one job object per line). Omit or use
+        /// "-" to read jobs from standard input.
+        #[arg(long = "input", value_name = "FILE")]
+        input: Option<String>,
+        /// Maximum number of jobs in flight at once (must be at least 1).
+        #[arg(
+            long = "concurrency",
+            value_name = "N",
+            default_value_t = 1,
+            value_parser = clap::value_parser!(u32).range(1..)
+        )]
+        concurrency: u32,
+        /// Directory that receives one subdirectory per job containing
+        /// response.md, metadata.json and downloaded images.
+        #[arg(long = "output-dir", value_name = "DIR", default_value = "results")]
+        output_dir: String,
+        /// Stop starting new jobs after the first job that does not complete.
+        #[arg(long = "fail-fast", default_value_t = false)]
+        fail_fast: bool,
+    },
     /// Dump the current browser tab HTML for debugging
     #[command(hide = true)]
     Dump,
@@ -5650,6 +5675,121 @@ fn open_url_tab(
     wait_for_page_load(config_path, page_provider, verbose)
 }
 
+/// Build the page-side script for one response-completion poll. Shared by
+/// the single-prompt wait loop and the batch runner (issue #24) so both
+/// flows judge completion identically.
+fn response_check_script(
+    provider: Provider,
+    initial_assistant_count: usize,
+) -> Result<String, String> {
+    let stop_selectors = provider.stop_button_selectors_json();
+    let assistant_selector = serde_json::to_string(provider.assistant_selector())
+        .map_err(|e| format!("Failed to serialize assistant selector: {}", e))?;
+    let image_progress_helper = include_str!("image-progress.cjs");
+    let response_check_js = r###"() => {
+                __IMAGE_PROGRESS_HELPER__
+                const stopSelectors = __STOP_SELECTORS__;
+                const isVisible = (el) => {
+                    if (!el || el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+                    const style = window.getComputedStyle(el);
+                    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                    const rect = el.getBoundingClientRect();
+                    return rect.width > 0 && rect.height > 0;
+                };
+                const stopButton = stopSelectors.map((selector) => document.querySelector(selector)).find(isVisible);
+                const messages = document.querySelectorAll(__ASSISTANT_SELECTOR__);
+                const rawIsNew = messages.length > __INITIAL_COUNT__;
+                const progress = __CHATGPT_PROGRESS__
+                    ? globalThis.AskBridgeImageProgress.inspectActiveImageProgress({
+                        assistantSelector: __ASSISTANT_SELECTOR__,
+                        initialAssistantCount: __INITIAL_COUNT__
+                    })
+                    : {
+                        isNew: rawIsNew,
+                        markerPresent: false,
+                        progress: null,
+                        progressState: 'none',
+                        candidateCount: 0,
+                        readyCount: 0,
+                        allReady: false
+                    };
+                const isNew = __CHATGPT_PROGRESS__ ? progress.isNew : rawIsNew;
+                const progressPending = __CHATGPT_PROGRESS__ && progress.markerPresent &&
+                    (progress.progress == null || progress.progress < 100);
+                const progressAt100 = __CHATGPT_PROGRESS__ &&
+                    progress.markerPresent && progress.progress === 100;
+                const progressBlocksCompletion = __CHATGPT_PROGRESS__ &&
+                    globalThis.AskBridgeImageProgress.progressBlocksCompletion(progress);
+
+                if (isVisible(stopButton) || progressBlocksCompletion) {
+                    return {
+                        status: "generating",
+                        isNew: isNew,
+                        imageProgress: progress.progress,
+                        imageProgressState: progress.progressState,
+                        imageProgressMarkerPresent: progress.markerPresent,
+                        imageCandidateCount: progress.candidateCount,
+                        imageReadyCount: progress.readyCount
+                    };
+                }
+
+                // ChatGPT marks a streaming turn as in_progress until the
+                // final answer is complete.
+                const turnStates = document.querySelectorAll('[data-talvt-turn-state]');
+                const latestTurnState = turnStates.length > 0
+                    ? turnStates[turnStates.length - 1].getAttribute('data-talvt-turn-state')
+                    : '';
+                if (latestTurnState === 'in_progress') {
+                    return { status: "generating", isNew: isNew };
+                }
+
+                if (isNew) {
+                    return {
+                        status: "done",
+                        isNew: isNew,
+                        imageProgress: progress.progress,
+                        imageProgressState: progress.progressState,
+                        imageProgressMarkerPresent: progress.markerPresent,
+                        imageCandidateCount: progress.candidateCount,
+                        imageReadyCount: progress.readyCount
+                    };
+                }
+                
+                return {
+                    status: "waiting",
+                    isNew: isNew,
+                    imageProgress: progress.progress,
+                    imageProgressState: progress.progressState,
+                    imageProgressMarkerPresent: progress.markerPresent,
+                    imageCandidateCount: progress.candidateCount,
+                    imageReadyCount: progress.readyCount
+                };
+            }"###
+        .replace("__IMAGE_PROGRESS_HELPER__", image_progress_helper)
+        .replace("__STOP_SELECTORS__", stop_selectors)
+        .replace("__ASSISTANT_SELECTOR__", &assistant_selector)
+        .replace("__INITIAL_COUNT__", &initial_assistant_count.to_string())
+        .replace("__CHATGPT_PROGRESS__", if provider == Provider::ChatGpt { "true" } else { "false" });
+    Ok(response_check_js)
+}
+
+/// Run one response-completion poll against the currently selected page.
+/// `Ok(None)` means the tool call succeeded but its payload could not be
+/// parsed; callers treat that as "no state change".
+fn poll_response_once(
+    config_path: &str,
+    provider: Provider,
+    initial_assistant_count: usize,
+) -> Result<Option<Value>, String> {
+    let script = response_check_script(provider, initial_assistant_count)?;
+    let res = call_mcp_tool(
+        config_path,
+        "evaluate_script",
+        serde_json::json!({ "function": script }),
+    )?;
+    Ok(parse_script_result(&res).ok())
+}
+
 fn copy_latest_markdown(config_path: &str, provider: Provider) -> Result<String, String> {
     match copy_latest_markdown_via_clipboard(config_path, provider) {
         Ok(content) if provider == Provider::ChatGpt => {
@@ -8504,6 +8644,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // Batch inputs are validated before Chrome startup so configuration
+    // errors fail fast without launching a browser (issue #24).
+    let mut batch_jobs: Option<Vec<batch::JobSpec>> = None;
+    if let Some(Commands::Batch {
+        input, concurrency, ..
+    }) = &cli.command
+    {
+        match batch::prepare_batch(input.as_deref(), *concurrency) {
+            Ok(jobs) => batch_jobs = Some(jobs),
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+
     if let Err(e) = check_node_runtime() {
         eprintln!("Error: {}", e);
         std::process::exit(1);
@@ -8686,6 +8842,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Commands::Close => unreachable!("close command is handled before Chrome startup"),
             Commands::Config => unreachable!("config command is handled before Chrome startup"),
             Commands::Update => unreachable!("update command is handled before Chrome startup"),
+            Commands::Batch {
+                concurrency,
+                output_dir,
+                fail_fast,
+                ..
+            } => {
+                let jobs = batch_jobs
+                    .take()
+                    .expect("batch jobs are prepared before Chrome startup");
+                match batch::run_batch_command(
+                    &config_path,
+                    provider,
+                    is_headless,
+                    command_verbose,
+                    jobs,
+                    concurrency,
+                    &output_dir,
+                    fail_fast,
+                ) {
+                    Ok(code) => std::process::exit(code),
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
             Commands::Dump => {
                 let list_res = call_mcp_tool(&config_path, "list_pages", serde_json::json!({}))?;
                 println!("All pages: {:?}", list_res);
@@ -8980,101 +9162,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         if wait_cycles % 5 == 0 {
-            let stop_selectors = provider.stop_button_selectors_json();
-            let assistant_selector = serde_json::to_string(provider.assistant_selector())
-                .map_err(|e| format!("Failed to serialize assistant selector: {}", e))?;
-            let image_progress_helper = include_str!("image-progress.cjs");
-            let response_check_js = r###"() => {
-                    __IMAGE_PROGRESS_HELPER__
-                    const stopSelectors = __STOP_SELECTORS__;
-                    const isVisible = (el) => {
-                        if (!el || el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
-                        const style = window.getComputedStyle(el);
-                        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
-                        const rect = el.getBoundingClientRect();
-                        return rect.width > 0 && rect.height > 0;
-                    };
-                    const stopButton = stopSelectors.map((selector) => document.querySelector(selector)).find(isVisible);
-                    const messages = document.querySelectorAll(__ASSISTANT_SELECTOR__);
-                    const rawIsNew = messages.length > __INITIAL_COUNT__;
-                    const progress = __CHATGPT_PROGRESS__
-                        ? globalThis.AskBridgeImageProgress.inspectActiveImageProgress({
-                            assistantSelector: __ASSISTANT_SELECTOR__,
-                            initialAssistantCount: __INITIAL_COUNT__
-                        })
-                        : {
-                            isNew: rawIsNew,
-                            markerPresent: false,
-                            progress: null,
-                            progressState: 'none',
-                            candidateCount: 0,
-                            readyCount: 0,
-                            allReady: false
-                        };
-                    const isNew = __CHATGPT_PROGRESS__ ? progress.isNew : rawIsNew;
-                    const progressPending = __CHATGPT_PROGRESS__ && progress.markerPresent &&
-                        (progress.progress == null || progress.progress < 100);
-                    const progressAt100 = __CHATGPT_PROGRESS__ &&
-                        progress.markerPresent && progress.progress === 100;
-                    const progressBlocksCompletion = __CHATGPT_PROGRESS__ &&
-                        globalThis.AskBridgeImageProgress.progressBlocksCompletion(progress);
-
-                    if (isVisible(stopButton) || progressBlocksCompletion) {
-                        return {
-                            status: "generating",
-                            isNew: isNew,
-                            imageProgress: progress.progress,
-                            imageProgressState: progress.progressState,
-                            imageProgressMarkerPresent: progress.markerPresent,
-                            imageCandidateCount: progress.candidateCount,
-                            imageReadyCount: progress.readyCount
-                        };
-                    }
-
-                    // ChatGPT marks a streaming turn as in_progress until the
-                    // final answer is complete.
-                    const turnStates = document.querySelectorAll('[data-talvt-turn-state]');
-                    const latestTurnState = turnStates.length > 0
-                        ? turnStates[turnStates.length - 1].getAttribute('data-talvt-turn-state')
-                        : '';
-                    if (latestTurnState === 'in_progress') {
-                        return { status: "generating", isNew: isNew };
-                    }
-
-                    if (isNew) {
-                        return {
-                            status: "done",
-                            isNew: isNew,
-                            imageProgress: progress.progress,
-                            imageProgressState: progress.progressState,
-                            imageProgressMarkerPresent: progress.markerPresent,
-                            imageCandidateCount: progress.candidateCount,
-                            imageReadyCount: progress.readyCount
-                        };
-                    }
-                    
-                    return {
-                        status: "waiting",
-                        isNew: isNew,
-                        imageProgress: progress.progress,
-                        imageProgressState: progress.progressState,
-                        imageProgressMarkerPresent: progress.markerPresent,
-                        imageCandidateCount: progress.candidateCount,
-                        imageReadyCount: progress.readyCount
-                    };
-                }"###
-            .replace("__IMAGE_PROGRESS_HELPER__", image_progress_helper)
-            .replace("__STOP_SELECTORS__", stop_selectors)
-            .replace("__ASSISTANT_SELECTOR__", &assistant_selector)
-            .replace("__INITIAL_COUNT__", &initial_assistant_count.to_string())
-            .replace("__CHATGPT_PROGRESS__", if provider == Provider::ChatGpt { "true" } else { "false" });
-            let check_res = match call_mcp_tool(
-                &config_path,
-                "evaluate_script",
-                serde_json::json!({
-                    "function": response_check_js
-                }),
-            ) {
+            let parsed = match poll_response_once(&config_path, provider, initial_assistant_count) {
                 Ok(res) => res,
                 Err(e) => {
                     stable_done_checks = 0;
@@ -9100,7 +9188,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 break;
             }
 
-            if let Ok(parsed) = parse_script_result(&check_res) {
+            if let Some(parsed) = parsed {
                 let status = parsed["status"].as_str().unwrap_or("waiting");
                 let is_new = parsed["isNew"].as_bool().unwrap_or(false);
                 if provider == Provider::ChatGpt {
