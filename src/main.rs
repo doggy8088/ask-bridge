@@ -929,18 +929,41 @@ fn resolve_backend(
     cli_backend: Option<siwc::Backend>,
     provider: Provider,
 ) -> Result<siwc::Backend, String> {
-    let backend = match cli_backend {
-        Some(backend) => Some(backend),
-        None => load_configured_backend()?,
+    // The persisted `chatgptBackend` value is a ChatGPT-only preference:
+    // load it only when the effective provider is ChatGPT so it can never
+    // break other providers' commands.
+    let configured = if cli_backend.is_none() && provider == Provider::ChatGpt {
+        load_configured_backend()?
+    } else {
+        None
+    };
+    effective_backend(cli_backend, configured, provider)
+}
+
+/// Pure backend resolution: an explicit `--backend` wins; the persisted
+/// preference applies only to ChatGPT; everything else uses Browser. An
+/// explicit SIWC request for another provider is an error, while a
+/// persisted SIWC preference is simply inert for other providers.
+fn effective_backend(
+    cli_backend: Option<siwc::Backend>,
+    configured_backend: Option<siwc::Backend>,
+    provider: Provider,
+) -> Result<siwc::Backend, String> {
+    if let Some(backend) = cli_backend {
+        if backend == siwc::Backend::Siwc && provider != Provider::ChatGpt {
+            return Err(
+                "--backend siwc (Sign in with ChatGPT) is only supported with --provider chatgpt"
+                    .to_string(),
+            );
+        }
+        return Ok(backend);
     }
-    .unwrap_or_default();
-    if backend == siwc::Backend::Siwc && provider != Provider::ChatGpt {
-        return Err(
-            "--backend siwc (Sign in with ChatGPT) is only supported with --provider chatgpt"
-                .to_string(),
-        );
+    if provider == Provider::ChatGpt {
+        if let Some(backend) = configured_backend {
+            return Ok(backend);
+        }
     }
-    Ok(backend)
+    Ok(siwc::Backend::Browser)
 }
 
 /// Browser executable / profile overrides (issue #36). Resolution order,
@@ -4109,6 +4132,31 @@ mod tests {
                 extra
             );
         }
+    }
+
+    #[test]
+    fn persisted_siwc_backend_only_applies_to_chatgpt() {
+        // Persisted SIWC preference + another provider: Browser, no error.
+        assert_eq!(
+            effective_backend(None, Some(siwc::Backend::Siwc), Provider::Gemini).unwrap(),
+            siwc::Backend::Browser
+        );
+        assert_eq!(
+            effective_backend(None, Some(siwc::Backend::Siwc), Provider::Claude).unwrap(),
+            siwc::Backend::Browser
+        );
+        // Persisted SIWC preference + ChatGPT: SIWC applies.
+        assert_eq!(
+            effective_backend(None, Some(siwc::Backend::Siwc), Provider::ChatGpt).unwrap(),
+            siwc::Backend::Siwc
+        );
+        // Explicit --backend siwc + another provider: still an error.
+        assert!(effective_backend(Some(siwc::Backend::Siwc), None, Provider::Gemini).is_err());
+        // Defaults: Browser everywhere.
+        assert_eq!(
+            effective_backend(None, None, Provider::ChatGpt).unwrap(),
+            siwc::Backend::Browser
+        );
     }
 
     #[test]

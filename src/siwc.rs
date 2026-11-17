@@ -659,15 +659,33 @@ async fn wait_for_callback(
             .await
             .map_err(|_| "timed out waiting for the browser sign-in to complete".to_string())?
             .map_err(|e| format!("loopback listener failed: {}", e))?;
-        let mut buffer = vec![0u8; 8192];
-        let read =
-            tokio::time::timeout(std::time::Duration::from_secs(10), stream.read(&mut buffer))
-                .await;
-        let Ok(Ok(size)) = read else {
-            continue;
+        // A request line may arrive split across several TCP segments, so
+        // accumulate until its CRLF terminator (bounded and timed out)
+        // instead of trusting a single read to hold the whole line.
+        let mut received: Vec<u8> = Vec::new();
+        let mut chunk = [0u8; 2048];
+        let request_line = loop {
+            if let Some(end) = received
+                .windows(2)
+                .position(|w| w == b"\r\n")
+                .or_else(|| received.iter().position(|b| *b == b'\n'))
+            {
+                break String::from_utf8_lossy(&received[..end]).to_string();
+            }
+            if received.len() > 16_384 {
+                break String::from_utf8_lossy(&received).to_string();
+            }
+            match tokio::time::timeout(std::time::Duration::from_secs(10), stream.read(&mut chunk))
+                .await
+            {
+                Ok(Ok(0)) => break String::from_utf8_lossy(&received).to_string(),
+                Ok(Ok(size)) => received.extend_from_slice(&chunk[..size]),
+                _ => break String::new(),
+            }
         };
-        let request = String::from_utf8_lossy(&buffer[..size]).to_string();
-        let request_line = request.lines().next().unwrap_or_default().to_string();
+        if request_line.is_empty() {
+            continue;
+        }
         let mut parts = request_line.split_whitespace();
         let _method = parts.next();
         let target = parts.next().unwrap_or_default().to_string();
