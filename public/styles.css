@@ -339,6 +339,19 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 .usage__tag { font-family: var(--f-mono); font-size: 0.8rem; font-weight: 600; color: var(--primary-bright); letter-spacing: 0.02em; }
 .usage__step > p { color: var(--muted); font-size: 0.95rem; }
 
+/* ---- optional SIWC backend ---- */
+.siwc__intro { margin-block-start: 1rem; color: var(--muted); }
+.siwc__note { margin-block: 2rem; color: var(--muted); }
+.siwc__comparison { overflow: auto; max-inline-size: 100%; max-block-size: 28rem; border: 1px solid var(--line); border-radius: var(--r-sm); }
+.siwc__table { inline-size: 100%; min-inline-size: 38rem; border-collapse: separate; border-spacing: 0; font-size: 0.93rem; }
+.siwc__table caption { padding: 1rem; text-align: start; font-weight: 600; color: var(--ink); }
+.siwc__table th, .siwc__table td { padding: 1rem; text-align: start; border-block-start: 1px solid var(--line); vertical-align: top; }
+.siwc__table thead { position: sticky; inset-block-start: 0; z-index: 2; background: var(--surface); }
+.siwc__table tbody th { position: sticky; inset-inline-start: 0; z-index: 1; background: var(--surface); }
+.siwc__table td { color: var(--muted); }
+.siwc__notes { display: grid; gap: 1rem; margin-block: 2rem; color: var(--muted); }
+.siwc__links { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-block-start: 1.5rem; }
+
 /* ---- how (earned numbered sequence) ---- */
 .how__timeline { display: grid; gap: 0; counter-reset: step; }
 .how__timeline li {
@@ -347,6 +360,7 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
   position: relative;
 }
 .how__timeline li:last-child { border-bottom: 1px solid var(--line); }
+.how__timeline li > div { min-width: 0; overflow-wrap: anywhere; }
 .how__num { font-family: var(--f-mono); font-size: 0.9rem; font-weight: 700; color: var(--accent-ink); background: var(--accent); padding: 0.35rem 0.6rem; border-radius: 6px; height: fit-content; letter-spacing: 0.04em; }
 .how__timeline h3 { font-size: 1.2rem; margin-bottom: 0.35rem; }
 .how__timeline p { color: var(--muted); font-size: 0.97rem; max-width: 38em; }
@@ -488,6 +502,7 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
     z-index: 90;
   }
   .nav__links.open { transform: none; }
+  .nav__links:not(.open) { visibility: hidden; pointer-events: none; }
   .nav__links a { padding: 0.7rem 0.7rem; border-radius: 8px; }
   .nav__burger { display: inline-flex; align-items: center; justify-content: center; }
   .nav__cta span { display: none; }

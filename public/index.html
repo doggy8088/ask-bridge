@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="color-scheme" content="dark light" />
   <title>ask-bridge — 把終端機接上 ChatGPT 與 Gemini</title>
-  <meta name="description" content="ask-bridge 是以 Rust 撰寫的命令列研究橋接器，透過真實 Chrome 自動操作 ChatGPT 或 Gemini，把 prompt 送進網站、把回覆取回終端機。" />
+  <meta name="description" content="ask-bridge 是 Rust 命令列研究橋接器，支援 Chrome 網站自動化，或以 Sign in with ChatGPT（SIWC）方案額度直接串流回答。" />
 
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://ask-bridge.gh.miniasp.com/" />
   <meta property="og:title" content="ask-bridge — 把終端機接上 ChatGPT 與 Gemini" />
-  <meta property="og:description" content="給 AI Agent 用的外部研究橋接器。Rust 驅動真實 Chrome，一行指令取得 ChatGPT / Gemini 協助。" />
+  <meta property="og:description" content="ask-bridge 是 Rust 命令列研究橋接器，支援 Chrome 網站自動化，或以 Sign in with ChatGPT（SIWC）方案額度直接串流回答。" />
   <meta property="og:image" content="https://ask-bridge.gh.miniasp.com/assets/og-cover.jpg" />
   <meta property="og:image:alt" content="ask-bridge 光橋視覺：深黑舞台上以深紅與金色光線連接終端機與網站型 AI" />
   <meta name="twitter:card" content="summary_large_image" />
@@ -48,6 +48,7 @@
         <a href="#why" data-i18n="nav.why">為何而做</a>
         <a href="#features" data-i18n="nav.features">功能</a>
         <a href="#usage" data-i18n="nav.usage">用法</a>
+        <a href="#siwc">SIWC</a>
         <a href="#how" data-i18n="nav.how">原理</a>
         <a href="#install" data-i18n="nav.install">安裝</a>
       </nav>
@@ -93,7 +94,7 @@
         <div class="hero__copy">
           <p class="kicker" data-i18n="hero.kicker">給 AI Agent 用的研究橋接器</p>
           <h1 class="hero__title" data-i18n="hero.title">把終端機，<br/>接上 ChatGPT 與 Gemini</h1>
-          <p class="hero__sub" data-i18n="hero.sub">ask-bridge 以 Rust 驅動真實 Chrome，自動把 prompt 送進網站型 AI，再把回覆取回你的終端機。讓主要 Coding Agent 專注在高價值工作，把探索性研究交給網站額度。</p>
+          <p class="hero__sub" data-i18n="hero.sub">ask-bridge 預設透過真實 Chrome 操作網站型 AI；ChatGPT 也可選用 SIWC，以方案額度直接呼叫 API。把問題與工作上下文送出，再將回覆取回終端機。</p>
 
           <div class="hero__cta">
             <a class="btn btn--primary" href="#install" data-i18n="hero.ctaInstall">一鍵安裝</a>
@@ -138,8 +139,8 @@
         <p class="why__lead" data-i18n="why.lead">開發過程中有大量探索性 AI 需求——查資料、整理文件、比較方案、摘要錯誤、產生初稿。這些任務未必需要主要 Coding Agent 親自做，也不值得消耗與改程式、跑測試相同的額度。</p>
         <ul class="why__points">
           <li>
-            <h3 data-i18n="why.p1.t">額度分開計算</h3>
-            <p data-i18n="why.p1.d">網站型 AI 的使用額度與 Coding Agent 執行額度通常獨立。把研究工作委外，讓高價值額度留給程式碼。</p>
+            <h3 data-i18n="why.p1.t">看清額度來源</h3>
+            <p data-i18n="why.p1.d">瀏覽器模式使用網站額度；SIWC 使用 ChatGPT Work／Codex 方案額度或 credits，可能與主要 Coding Agent 共用，並非免費或無限 token。</p>
           </li>
           <li>
             <h3 data-i18n="why.p2.t">不離開工作流程</h3>
@@ -205,7 +206,7 @@
     <!-- Usage -->
     <section class="section usage" id="usage">
       <div class="section__head">
-        <h2 class="section__title" data-i18n="usage.title">三分鐘上手</h2>
+        <h2 class="section__title" data-i18n="usage.title">瀏覽器模式快速上手</h2>
       </div>
 
       <div class="usage__grid">
@@ -235,10 +236,77 @@ ask-bridge --provider gemini "翻譯這段" --model "3.1 Pro"</code><button clas
       </div>
     </section>
 
+    <!-- Optional ChatGPT SIWC backend -->
+    <section class="section siwc" id="siwc" aria-labelledby="siwc-title">
+      <div class="section__head">
+        <p class="kicker">Sign in with ChatGPT</p>
+        <h2 class="section__title" id="siwc-title" data-i18n="siwc.title">ChatGPT 方案，直接接上終端機</h2>
+        <p class="siwc__intro" data-i18n="siwc.intro">Sign in with ChatGPT（SIWC）是選用後端。OAuth 登入會開啟系統瀏覽器；之後提問直接使用 HTTP 串流，不啟動 Chrome，也不需要 API Key。未設定時仍使用 Browser/CDP。</p>
+      </div>
+      <div class="usage__grid">
+        <article class="usage__step">
+          <h3 class="usage__tag" data-i18n="siwc.login.t">1 · 登入並授權</h3>
+          <p data-i18n="siwc.login.d">完成 ChatGPT 方案使用授權，等候終端機確認成功。網站登入與 SIWC 憑證互相獨立；可用資格依帳號與 workspace 為準。</p>
+          <pre class="code code--blk" data-copy><code id="siwc-login">ask-bridge --provider chatgpt --backend siwc login</code><button class="copy" data-copy-target="siwc-login" data-i18n-aria="nav.copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button></pre>
+        </article>
+        <article class="usage__step">
+          <h3 class="usage__tag" data-i18n="siwc.ask.t">2 · 提問並保存回覆</h3>
+          <p data-i18n="siwc.ask.d">回覆即時輸出；只有成功完成後才寫入 -o，成功時會覆寫舊檔。--timeout 涵蓋 token 更新、模型目錄與推論，預設 300 秒。</p>
+          <pre class="code code--blk" data-copy><code id="siwc-ask">ask-bridge --provider chatgpt --backend siwc --timeout 120 -o answer.md "Compare these approaches"</code><button class="copy" data-copy-target="siwc-ask" data-i18n-aria="nav.copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button></pre>
+        </article>
+        <article class="usage__step">
+          <h3 class="usage__tag" data-i18n="siwc.context.t">3 · 傳入工作上下文</h3>
+          <p data-i18n="siwc.context.d">prompt 與 stdin 會一起送出。不會自動讀取目前目錄、IDE 或 Agent 對話；多份資料請先加上來源標籤。PowerShell 可用 Get-Content -Raw -Encoding utf8 report.md 取代 cat report.md。</p>
+          <pre class="code code--blk" data-copy><code id="siwc-context">cat report.md | ask-bridge --provider chatgpt --backend siwc "Summarize the key points"
+git diff -- src/main.rs | ask-bridge --provider chatgpt --backend siwc "Review this diff"</code><button class="copy" data-copy-target="siwc-context" data-i18n-aria="nav.copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button></pre>
+        </article>
+        <article class="usage__step">
+          <h3 class="usage__tag" data-i18n="siwc.config.t">4 · 設成預設，或切回瀏覽器</h3>
+          <p data-i18n="siwc.config.d">--provider 選服務，--backend 選本次傳輸方式。config --chatgpt-backend 僅儲存 ChatGPT 的預設後端，不會更改 provider；--backend 可單次覆蓋。</p>
+          <pre class="code code--blk" data-copy><code id="siwc-config">ask-bridge config --chatgpt-backend siwc
+ask-bridge config</code><button class="copy" data-copy-target="siwc-config" data-i18n-aria="nav.copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button></pre>
+        </article>
+      </div>
+      <p class="siwc__note" data-i18n="siwc.model">模型以帳號 API 目錄為準；登入後會嘗試列出模型與 slug。用 --model "MODEL_SLUG" 指定實際 slug，省略時使用目錄第一個模型，不沿用網頁選單。</p>
+      <div class="siwc__comparison" tabindex="0" role="region" aria-labelledby="siwc-caption">
+        <table class="siwc__table">
+          <caption id="siwc-caption" data-i18n="siwc.matrix">選擇適合的後端</caption>
+          <thead><tr><th scope="col" data-i18n="siwc.feature">功能</th><th scope="col" data-i18n="siwc.browser">Browser/CDP</th><th scope="col" data-i18n="siwc.api">SIWC</th></tr></thead>
+          <tbody>
+            <tr><th scope="row" data-i18n="siwc.row.text">文字、stdin、輸出檔</th><td data-i18n="siwc.yes">支援</td><td data-i18n="siwc.yes">支援</td></tr>
+            <tr><th scope="row" data-i18n="siwc.row.session">網頁對話、臨時聊天</th><td data-i18n="siwc.web">依網站功能</td><td data-i18n="siwc.noSession">不支援；每次提問獨立</td></tr>
+            <tr><th scope="row" data-i18n="siwc.row.tools">附件、生圖、batch、--reasoning</th><td data-i18n="siwc.provider">依 provider／功能支援</td><td data-i18n="siwc.noTools">目前不支援，會明確拒絕</td></tr>
+            <tr><th scope="row" data-i18n="siwc.row.cost">額度來源</th><td data-i18n="siwc.webCost">網站產品與帳號限制</td><td data-i18n="siwc.planCost">ChatGPT Work／Codex 額度或 credits</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="siwc__notes">
+        <p data-i18n="siwc.history">需要接續討論？自行把上一輪問題、回覆與必要背景整理成文字，再透過 stdin 傳入。沒有內建多輪歷史，也不能用 --session 接續 chatgpt.com 對話。只提供相關片段，避免敏感資料與過長歷史。</p>
+        <p data-i18n="siwc.failure">部分文字不代表成功。額度錯誤或中斷可能在串流途中發生；失敗時以非零代碼結束、不執行 -o 寫檔，也不會自動改走瀏覽器或 API Key。</p>
+        <p data-i18n="siwc.security">登入失效時重新執行 SIWC login；logout 清除本機帳號與 token，保留 host ID，不撤銷伺服器授權、不登出網站、不改預設後端。Unix 憑證權限為 0600；TLS 檢查環境的受信任攔截方可看到 token 交換內容。</p>
+      </div>
+      <pre class="code code--blk" data-copy><code id="siwc-logout">ask-bridge --provider chatgpt --backend siwc logout</code><button class="copy" data-copy-target="siwc-logout" data-i18n-aria="nav.copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button></pre>
+      <div class="usage__grid">
+        <div class="usage__step">
+          <p data-i18n="siwc.switch">單次使用網站功能：以 --backend browser 登入並提問，不改持久設定。</p>
+          <pre class="code code--blk" data-copy><code id="siwc-browser">ask-bridge --provider chatgpt --backend browser login
+ask-bridge --provider chatgpt --backend browser "Use the web interface"</code><button class="copy" data-copy-target="siwc-browser" data-i18n-aria="nav.copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button></pre>
+        </div>
+        <div class="usage__step">
+          <p data-i18n="siwc.reset">恢復預設瀏覽器後端；登出 SIWC 需另外執行 logout。</p>
+          <pre class="code code--blk" data-copy><code id="siwc-reset">ask-bridge config --chatgpt-backend browser</code><button class="copy" data-copy-target="siwc-reset" data-i18n-aria="nav.copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button></pre>
+        </div>
+      </div>
+      <div class="siwc__links">
+        <a class="btn btn--ghost" href="https://github.com/doggy8088/ask-bridge/blob/main/README.md#16-使用-chatgpt-訂閱額度-api-後端siwc" data-i18n="siwc.docs">完整中文指南</a>
+        <a class="btn btn--ghost" href="https://github.com/doggy8088/ask-bridge/blob/main/README.en.md#14-use-your-chatgpt-plan-through-siwc" data-i18n="siwc.docsEn">English guide</a>
+      </div>
+    </section>
+
     <!-- How it works -->
     <section class="section how" id="how">
       <div class="section__head">
-        <h2 class="section__title" data-i18n="how.title">從指令到回覆，四個步驟</h2>
+        <h2 class="section__title" data-i18n="how.title">瀏覽器模式的四個步驟</h2>
       </div>
       <ol class="how__timeline">
         <li>
@@ -280,6 +348,7 @@ ask-bridge --provider gemini "翻譯這段" --model "3.1 Pro"</code><button clas
 
       <div class="install__req">
         <h3 data-i18n="install.req.title">前置需求</h3>
+        <p data-i18n="install.req.siwc">以下是瀏覽器模式的需求。SIWC 提問本身不需要 Node.js／npx 或 Chrome；OAuth 仍需要系統瀏覽器，目前安裝腳本也仍檢查瀏覽器相依。</p>
         <p data-i18n="install.req.lead">需要 Node.js 20.19.0 LTS 以上或更新的 LTS 版本，且 node 與 npx 必須可在目前 shell 的 PATH 中執行。ask-bridge 會透過 npx 啟動 chrome-devtools-mcp@latest；Node.js 版本過舊時，MCP server 可能在 initialize 階段直接退出。</p>
         <pre class="code code--blk install__check" data-copy><code id="reqc">node -v
 npx -v</code><button class="copy" data-copy-target="reqc" data-i18n-aria="nav.copy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5 15V5.5A1.5 1.5 0 0 1 6.5 4H15" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button></pre>
