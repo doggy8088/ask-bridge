@@ -535,7 +535,7 @@ ask-bridge config --chatgpt-backend siwc
 限制與行為：
 
 - 憑證保存於 `~/.config/ask-bridge/siwc-credentials.json`（原子寫入，Unix 權限 0600），token 不會出現在任何輸出或日誌；access token 過期會自動以 refresh token 換新，失效時請重新 `login`。
-- HTTPS 使用 rustls，同時信任內建 CA 與作業系統憑證庫，支援已由系統信任的企業代理／防毒軟體憑證。若出現 `UnknownIssuer`，請確認所需 CA 已由管理員正確安裝至系統信任庫；不要停用 TLS 憑證驗證。連線錯誤會顯示底層原因，但不包含請求 URL、headers 或 body。
+- HTTPS 使用 rustls，同時信任內建 CA 與作業系統憑證庫，支援已由系統信任的企業代理／防毒軟體憑證。若出現 `UnknownIssuer`，請確認所需 CA 已由管理員正確安裝至系統信任庫；不要停用 TLS 憑證驗證。連線錯誤會顯示底層原因，但不包含請求 URL、headers 或 body。注意：在裝有 TLS 檢查（企業代理、防毒軟體 HTTPS 掃描）的機器上，該攔截方能看到 SIWC 的連線內容（包含 token 交換）；請只在信任該攔截環境時使用 SIWC 後端。
 - SIWC 為 OpenAI 的 Preview 流程，可用模型與額度政策以帳號實際狀態為準；`--model` 會對照帳號模型目錄驗證，不存在時會列出可用模型。
 - 與 SIWC 不相容的選項（`--session`、`--temporary`、`--new`、`--reasoning`、`--image`、`--file`、`--image-output`、`batch`）一律在使用前明確拒絕，不會靜默降級或改走其他後端。
 
