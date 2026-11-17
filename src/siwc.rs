@@ -270,16 +270,20 @@ pub fn save_store(store: &SiwcStore) -> Result<(), String> {
     write_owner_only_atomic(&path, content.as_bytes())
 }
 
-/// Remove all stored SIWC credentials (sign out).
+/// Remove all stored SIWC accounts (sign out) while preserving the
+/// stable `ext_agent_host_id`: the SIWC flow requires the same host ID
+/// for every sign-in from this host, including after a sign-out.
 pub fn clear_store() -> Result<bool, String> {
     let path = credentials_path()?;
-    if path.exists() {
-        std::fs::remove_file(&path)
-            .map_err(|e| format!("failed to remove {}: {}", path.to_string_lossy(), e))?;
-        Ok(true)
-    } else {
-        Ok(false)
+    if !path.exists() {
+        return Ok(false);
     }
+    let mut store = load_store()?;
+    let had_accounts = !store.accounts.is_empty() || store.active_client_id.is_some();
+    store.accounts.clear();
+    store.active_client_id = None;
+    save_store(&store)?;
+    Ok(had_accounts)
 }
 
 fn now_unix() -> i64 {
@@ -347,6 +351,21 @@ pub fn build_authorize_url(req: &AuthorizeRequest) -> String {
         .collect::<Vec<_>>()
         .join("&");
     format!("{}?{}", AUTHORIZE_URL, query)
+}
+
+/// The authorize URL as printed for manual opening: identical to the
+/// real URL except that `id_token_hint` (a full ID token) is removed, so
+/// tokens never reach terminal scrollback or captured logs. The browser
+/// still receives the complete URL.
+pub fn redacted_authorize_url(url: &str) -> String {
+    let Some((base, query)) = url.split_once('?') else {
+        return url.to_string();
+    };
+    let kept: Vec<&str> = query
+        .split('&')
+        .filter(|pair| !pair.starts_with("id_token_hint="))
+        .collect();
+    format!("{}?{}", base, kept.join("&"))
 }
 
 /// Parsed loopback callback parameters.
@@ -597,6 +616,7 @@ pub async fn fresh_access_token(
             ("grant_type", "refresh_token"),
             ("refresh_token", account.refresh_token.as_str()),
             ("client_id", account.client_id.as_str()),
+            ("resource", RESOURCE),
         ],
     )
     .await
@@ -759,7 +779,7 @@ pub async fn login() -> Result<(), String> {
 
     println!("Opening your browser to sign in with ChatGPT...");
     println!("If the browser does not open, visit this URL manually:");
-    println!("{}", authorize_url);
+    println!("{}", redacted_authorize_url(&authorize_url));
     let _ = open::that(&authorize_url);
 
     let query = wait_for_callback(&listener, LOGIN_TIMEOUT_SECS).await?;
@@ -889,7 +909,7 @@ pub async fn login() -> Result<(), String> {
 /// Sign out: delete the stored SIWC credentials.
 pub fn logout() -> Result<(), String> {
     if clear_store()? {
-        println!("Signed out of ChatGPT (SIWC credentials removed).");
+        println!("Signed out of ChatGPT (stored SIWC account credentials removed).");
     } else {
         println!("No SIWC credentials were stored.");
     }
@@ -1370,6 +1390,29 @@ mod tests {
         let err = resolve_model(&catalog, Some("gpt-z")).unwrap_err();
         assert!(err.contains("gpt-a, gpt-b"), "unexpected: {}", err);
         assert!(resolve_model(&[], None).is_err());
+    }
+
+    #[test]
+    fn printed_authorize_url_never_contains_the_id_token_hint() {
+        let url = build_authorize_url(&AuthorizeRequest {
+            client_id: "oaiapp_123".to_string(),
+            dynamic_registration: false,
+            host_id: "urn:uuid:host".to_string(),
+            redirect_uri: "http://127.0.0.1:1455/auth/callback".to_string(),
+            state: "s".to_string(),
+            nonce: "n".to_string(),
+            code_challenge: "c".to_string(),
+            id_token_hint: Some("SECRET-ID-TOKEN".to_string()),
+            login_hint: Some("user@example.com".to_string()),
+        });
+        assert!(
+            url.contains("SECRET-ID-TOKEN"),
+            "browser URL keeps the hint"
+        );
+        let printed = redacted_authorize_url(&url);
+        assert!(!printed.contains("SECRET-ID-TOKEN"));
+        assert!(!printed.contains("id_token_hint"));
+        assert!(printed.contains("login_hint=user%40example.com"));
     }
 
     #[test]
