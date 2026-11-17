@@ -695,9 +695,19 @@ async fn wait_for_callback(
             if received.len() > 16_384 {
                 break String::from_utf8_lossy(&received).to_string();
             }
-            match tokio::time::timeout(std::time::Duration::from_secs(10), stream.read(&mut chunk))
-                .await
-            {
+            // Each read is capped by both the per-read limit and the
+            // overall login deadline, so a slow-drip connection cannot
+            // hold the listener past the deadline.
+            let read_cap = deadline
+                .saturating_duration_since(tokio::time::Instant::now())
+                .min(std::time::Duration::from_secs(10));
+            if read_cap.is_zero() {
+                return Err(format!(
+                    "timed out after {} seconds waiting for the browser sign-in to complete",
+                    timeout_secs
+                ));
+            }
+            match tokio::time::timeout(read_cap, stream.read(&mut chunk)).await {
                 Ok(Ok(0)) => break String::from_utf8_lossy(&received).to_string(),
                 Ok(Ok(size)) => received.extend_from_slice(&chunk[..size]),
                 _ => break String::new(),
@@ -1007,7 +1017,7 @@ impl StreamAccumulator {
         }
         let event: serde_json::Value = serde_json::from_str(data).ok()?;
         match event.get("type").and_then(|t| t.as_str()) {
-            Some("response.output_text.delta") => {
+            Some("response.output_text.delta") | Some("response.refusal.delta") => {
                 let delta = event
                     .get("delta")
                     .and_then(|d| d.as_str())
@@ -1055,6 +1065,12 @@ impl StreamAccumulator {
         }
     }
 
+    /// True once a terminal event (completed / failed / incomplete) has
+    /// been applied; the caller should stop reading the stream there.
+    pub fn is_terminal(&self) -> bool {
+        self.completed || self.failure.is_some() || self.incomplete.is_some()
+    }
+
     pub fn into_result(self) -> Result<String, String> {
         if let Some(failure) = &self.failure {
             if failure.contains("subscription_sharing_usage_limit_exceeded")
@@ -1080,29 +1096,60 @@ impl StreamAccumulator {
     }
 }
 
-/// Incremental SSE framing: buffers raw bytes and yields complete
-/// `data:` payloads per event block.
+/// Incremental SSE framing over raw bytes: chunk boundaries may split
+/// multi-byte UTF-8 characters, so bytes are buffered and only complete
+/// event blocks (separated by a blank line, LF or CRLF) are decoded.
 #[derive(Default)]
 pub struct SseParser {
-    buffer: String,
+    buffer: Vec<u8>,
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 impl SseParser {
     pub fn push(&mut self, chunk: &[u8]) -> Vec<String> {
-        self.buffer.push_str(&String::from_utf8_lossy(chunk));
+        self.buffer.extend_from_slice(chunk);
         let mut payloads = Vec::new();
-        while let Some(idx) = self.buffer.find("\n\n") {
-            let block: String = self.buffer.drain(..idx + 2).collect();
-            let data: Vec<&str> = block
-                .lines()
-                .filter_map(|line| line.strip_prefix("data:"))
-                .map(|d| d.trim_start())
-                .collect();
-            if !data.is_empty() {
-                payloads.push(data.join("\n"));
+        loop {
+            let lf = find_subslice(&self.buffer, b"\n\n").map(|i| (i, 2));
+            let crlf = find_subslice(&self.buffer, b"\r\n\r\n").map(|i| (i, 4));
+            let Some((idx, len)) = [lf, crlf].into_iter().flatten().min_by_key(|(i, _)| *i) else {
+                break;
+            };
+            let block: Vec<u8> = self.buffer.drain(..idx + len).collect();
+            if let Some(payload) = decode_sse_block(&block) {
+                payloads.push(payload);
             }
         }
         payloads
+    }
+
+    /// Flush a trailing event block that arrived without its final blank
+    /// line before the stream closed.
+    pub fn finish(&mut self) -> Vec<String> {
+        if self.buffer.is_empty() {
+            return Vec::new();
+        }
+        let block = std::mem::take(&mut self.buffer);
+        decode_sse_block(&block).into_iter().collect()
+    }
+}
+
+fn decode_sse_block(block: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(block);
+    let data: Vec<&str> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .map(|d| d.trim_start())
+        .collect();
+    if data.is_empty() {
+        None
+    } else {
+        Some(data.join("\n"))
     }
 }
 
@@ -1147,16 +1194,21 @@ pub async fn ask(
                 .to_string(),
         );
     }
-    let http = reqwest::Client::builder()
-        .build()
-        .map_err(|e| format!("failed to build HTTP client: {}", e))?;
-    let access_token = fresh_access_token(&http, &mut store).await?;
-    let catalog = fetch_models(&http, &access_token).await?;
-    let model = resolve_model(&catalog, requested_model)?;
-
+    // The overall deadline covers everything: token refresh, the model
+    // catalog and the streamed exchange. The pre-requests additionally use
+    // the standard 30-second-timeout client; only the streaming call uses
+    // a client without a total timeout (the deadline governs it).
     let deadline = std::time::Duration::from_secs(timeout_secs.max(1));
-    let exchange = async {
-        let response = http
+    let work = async {
+        let http = http_client()?;
+        let access_token = fresh_access_token(&http, &mut store).await?;
+        let catalog = fetch_models(&http, &access_token).await?;
+        let model = resolve_model(&catalog, requested_model)?;
+
+        let stream_http = reqwest::Client::builder()
+            .build()
+            .map_err(|e| format!("failed to build HTTP client: {}", e))?;
+        let response = stream_http
             .post(format!("{}/responses", API_BASE))
             .bearer_auth(&access_token)
             .json(&build_responses_body(&model, prompt))
@@ -1172,7 +1224,7 @@ pub async fn ask(
         let mut parser = SseParser::default();
         let mut accumulator = StreamAccumulator::default();
         use std::io::Write;
-        loop {
+        'stream: loop {
             match response.chunk().await {
                 Ok(Some(chunk)) => {
                     for payload in parser.push(&chunk) {
@@ -1180,17 +1232,34 @@ pub async fn ask(
                             print!("{}", delta);
                             let _ = std::io::stdout().flush();
                         }
+                        if accumulator.is_terminal() {
+                            // A terminal event settles the outcome; do not
+                            // let a lingering connection replace it with a
+                            // timeout or interruption error.
+                            break 'stream;
+                        }
                     }
                 }
-                Ok(None) => break,
+                Ok(None) => {
+                    for payload in parser.finish() {
+                        if let Some(delta) = accumulator.apply(&payload) {
+                            print!("{}", delta);
+                            let _ = std::io::stdout().flush();
+                        }
+                    }
+                    break;
+                }
                 Err(e) => {
+                    if accumulator.is_terminal() {
+                        break;
+                    }
                     return Err(format!("the response stream was interrupted: {}", e));
                 }
             }
         }
         accumulator.into_result()
     };
-    let text = tokio::time::timeout(deadline, exchange)
+    let text = tokio::time::timeout(deadline, work)
         .await
         .map_err(|_| format!("SIWC request timed out after {} seconds", timeout_secs))??;
     if !text.ends_with('\n') {
@@ -1361,6 +1430,43 @@ mod tests {
                 .unwrap_err()
                 .contains("response.completed")
         );
+    }
+
+    #[test]
+    fn sse_parser_preserves_utf8_split_across_chunks_and_crlf_frames() {
+        // Split the stream inside a multi-byte character and use CRLF
+        // event separators: the decoded payload must be intact.
+        let raw =
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"中文\"}\r\n\r\n".as_bytes();
+        let split = 20;
+        let mut parser = SseParser::default();
+        assert!(parser.push(&raw[..split]).is_empty());
+        let payloads = parser.push(&raw[split..]);
+        assert_eq!(payloads.len(), 1);
+        let mut acc = StreamAccumulator::default();
+        let delta = acc.apply(&payloads[0]);
+        assert_eq!(delta.as_deref(), Some("中文"));
+
+        // A trailing event without its final blank line is flushed.
+        let mut parser = SseParser::default();
+        assert!(
+            parser
+                .push(b"data: {\"type\":\"response.completed\"}")
+                .is_empty()
+        );
+        assert_eq!(parser.finish().len(), 1);
+    }
+
+    #[test]
+    fn stream_accumulator_collects_refusals_and_reports_terminal() {
+        let mut acc = StreamAccumulator::default();
+        let delta =
+            acc.apply(r#"{"type":"response.refusal.delta","delta":"I cannot help with that"}"#);
+        assert_eq!(delta.as_deref(), Some("I cannot help with that"));
+        assert!(!acc.is_terminal());
+        acc.apply(r#"{"type":"response.completed","response":{}}"#);
+        assert!(acc.is_terminal());
+        assert_eq!(acc.into_result().unwrap(), "I cannot help with that");
     }
 
     #[test]
