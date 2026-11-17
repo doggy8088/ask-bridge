@@ -20,6 +20,7 @@ use url::Url;
 use std::os::windows::process::CommandExt;
 
 mod batch;
+mod siwc;
 
 const ASK_BRIDGE_CHROME_MARKER: &str = "--ask-bridge-instance";
 
@@ -681,6 +682,20 @@ struct Cli {
     #[arg(long, short = 'p', value_enum, global = true)]
     provider: Option<Provider>,
 
+    /// Execution backend. `browser` (default) automates the provider's web
+    /// app in Chrome; `siwc` uses Sign in with ChatGPT to call the public
+    /// Responses API with your ChatGPT plan (ChatGPT provider only, no API
+    /// key required; plan usage or credits apply). Overrides the
+    /// `chatgptBackend` value in ~/.config/ask-bridge/config.json.
+    #[arg(long, value_enum, global = true)]
+    backend: Option<siwc::Backend>,
+
+    /// Default ChatGPT backend persisted by the `config` subcommand
+    /// (`browser` or `siwc`). Only takes effect with the `config`
+    /// subcommand; use `--backend` for a one-time override.
+    #[arg(long = "chatgpt-backend", value_enum, global = true)]
+    chatgpt_backend: Option<siwc::Backend>,
+
     /// Browser executable to launch instead of Google Chrome (any Chromium-based
     /// browser, e.g. ego lite, Brave, Edge, Chromium). Overrides the
     /// ASK_BRIDGE_BROWSER_PATH environment variable and ~/.config/ask-bridge/config.json.
@@ -786,6 +801,9 @@ enum Commands {
     },
     /// Open Chrome browser and wait for manual login
     Login,
+    /// Sign out of the SIWC backend (removes stored Sign in with ChatGPT
+    /// credentials). Only applies with `--backend siwc`.
+    Logout,
     /// Close the managed Chrome browser instance
     Close,
     /// Set or show global defaults (provider, browser path, browser profile directory).
@@ -831,6 +849,8 @@ struct AppConfig {
     browser_path: Option<String>,
     #[serde(alias = "browserProfileDir")]
     browser_profile_dir: Option<String>,
+    #[serde(alias = "chatgptBackend")]
+    chatgpt_backend: Option<String>,
 }
 
 fn config_file_path() -> Result<PathBuf, String> {
@@ -871,6 +891,56 @@ fn load_configured_provider() -> Result<Option<Provider>, String> {
             e
         )
     })
+}
+
+fn parse_configured_backend(content: &str) -> Result<Option<siwc::Backend>, String> {
+    let config: AppConfig =
+        serde_json::from_str(content).map_err(|e| format!("Failed to parse config.json: {}", e))?;
+
+    match config.chatgpt_backend {
+        Some(value) => siwc::Backend::from_config_value(&value)
+            .map(Some)
+            .ok_or_else(|| format!("Unsupported chatgptBackend value: {}", value)),
+        None => Ok(None),
+    }
+}
+
+fn load_configured_backend() -> Result<Option<siwc::Backend>, String> {
+    let config_path = config_file_path()?;
+    if !config_path.exists() {
+        return Ok(None);
+    }
+
+    let content = std::fs::read_to_string(&config_path).map_err(|e| {
+        format!(
+            "Failed to read config file {}: {}",
+            config_path.to_string_lossy(),
+            e
+        )
+    })?;
+
+    parse_configured_backend(&content)
+}
+
+/// Effective backend: `--backend` flag first, then the persisted
+/// `chatgptBackend` config value, then the Browser default. The SIWC
+/// backend exists only for the ChatGPT provider.
+fn resolve_backend(
+    cli_backend: Option<siwc::Backend>,
+    provider: Provider,
+) -> Result<siwc::Backend, String> {
+    let backend = match cli_backend {
+        Some(backend) => Some(backend),
+        None => load_configured_backend()?,
+    }
+    .unwrap_or_default();
+    if backend == siwc::Backend::Siwc && provider != Provider::ChatGpt {
+        return Err(
+            "--backend siwc (Sign in with ChatGPT) is only supported with --provider chatgpt"
+                .to_string(),
+        );
+    }
+    Ok(backend)
 }
 
 /// Browser executable / profile overrides (issue #36). Resolution order,
@@ -1114,6 +1184,7 @@ fn run_config_command(
     cli_provider: Option<Provider>,
     browser_path_arg: Option<String>,
     browser_profile_dir_arg: Option<String>,
+    chatgpt_backend_arg: Option<siwc::Backend>,
 ) -> Result<(), String> {
     let mut changed = false;
 
@@ -1172,6 +1243,19 @@ fn run_config_command(
         changed = true;
     }
 
+    if let Some(backend) = chatgpt_backend_arg {
+        let config_path = write_config_fields(&[(
+            "chatgptBackend",
+            Some(serde_json::json!(backend.as_config_value())),
+        )])?;
+        println!(
+            "Set ChatGPT backend to '{}' in {}",
+            backend.as_config_value(),
+            config_path.to_string_lossy()
+        );
+        changed = true;
+    }
+
     if changed {
         return Ok(());
     }
@@ -1226,7 +1310,12 @@ fn run_config_command(
             config_path.to_string_lossy()
         );
     }
+    match load_configured_backend()? {
+        Some(backend) => println!("Configured ChatGPT backend: {}", backend.as_config_value()),
+        None => println!("ChatGPT backend: browser (default)"),
+    }
     println!("Set default provider with: ask-bridge config --provider <chatgpt|gemini|claude>");
+    println!("Set ChatGPT backend with: ask-bridge config --chatgpt-backend <browser|siwc>");
     println!(
         "Set browser with: ask-bridge config --browser-path <PATH> [--browser-profile-dir <DIR>]"
     );
@@ -3887,6 +3976,47 @@ mod tests {
         let cli = Cli::try_parse_from(["ask-bridge", "config", "--provider", "gemini"]).unwrap();
         assert_eq!(cli.provider, Some(Provider::Gemini));
         assert!(matches!(cli.command, Some(Commands::Config)));
+    }
+
+    #[test]
+    fn parses_siwc_backend_flags_and_commands() {
+        let cli = Cli::try_parse_from(["ask-bridge", "--backend", "siwc", "login"]).unwrap();
+        assert_eq!(cli.backend, Some(siwc::Backend::Siwc));
+        assert!(matches!(cli.command, Some(Commands::Login)));
+
+        let cli = Cli::try_parse_from([
+            "ask-bridge",
+            "--provider",
+            "chatgpt",
+            "--backend",
+            "siwc",
+            "logout",
+        ])
+        .unwrap();
+        assert!(matches!(cli.command, Some(Commands::Logout)));
+
+        let cli =
+            Cli::try_parse_from(["ask-bridge", "config", "--chatgpt-backend", "siwc"]).unwrap();
+        assert_eq!(cli.chatgpt_backend, Some(siwc::Backend::Siwc));
+        assert!(matches!(cli.command, Some(Commands::Config)));
+
+        // No backend flag: the browser backend stays the default.
+        let cli = Cli::try_parse_from(["ask-bridge", "hello"]).unwrap();
+        assert_eq!(cli.backend, None);
+    }
+
+    #[test]
+    fn parses_configured_backend_values() {
+        assert_eq!(
+            parse_configured_backend(r#"{"chatgptBackend":"siwc"}"#).unwrap(),
+            Some(siwc::Backend::Siwc)
+        );
+        assert_eq!(
+            parse_configured_backend(r#"{"chatgptBackend":"browser"}"#).unwrap(),
+            Some(siwc::Backend::Browser)
+        );
+        assert_eq!(parse_configured_backend(r#"{}"#).unwrap(), None);
+        assert!(parse_configured_backend(r#"{"chatgptBackend":"api"}"#).is_err());
     }
 
     #[test]
@@ -8528,6 +8658,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cli.provider,
             cli.browser_path.clone(),
             cli.browser_profile_dir.clone(),
+            cli.chatgpt_backend,
         ) {
             eprintln!("Error: {}", e);
             std::process::exit(1);
@@ -8550,6 +8681,68 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
     };
+
+    let backend = match resolve_backend(cli.backend, provider) {
+        Ok(backend) => backend,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    if matches!(cli.command, Some(Commands::Logout)) {
+        if backend != siwc::Backend::Siwc {
+            eprintln!(
+                "Error: logout only applies to the SIWC backend; use `ask-bridge --backend siwc logout`"
+            );
+            std::process::exit(1);
+        }
+        if let Err(e) = siwc::logout() {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
+    if backend == siwc::Backend::Siwc {
+        match &cli.command {
+            Some(Commands::Login) => {
+                let runtime = match tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => runtime,
+                    Err(e) => {
+                        eprintln!("Error: failed to start async runtime: {}", e);
+                        std::process::exit(1);
+                    }
+                };
+                if let Err(e) = runtime.block_on(siwc::login()) {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+                return Ok(());
+            }
+            Some(Commands::Batch { .. }) => {
+                eprintln!(
+                    "Error: the batch command does not support --backend siwc; batch jobs use the browser backend"
+                );
+                std::process::exit(1);
+            }
+            Some(Commands::Get { .. }) | Some(Commands::Open { .. }) | Some(Commands::Close) => {
+                eprintln!(
+                    "Error: this command operates on the browser session and does not apply to --backend siwc"
+                );
+                std::process::exit(1);
+            }
+            _ => {
+                eprintln!(
+                    "Error: SIWC sign-in is available (`ask-bridge --backend siwc login`), but SIWC inference is not included in this build yet (issue #40)"
+                );
+                std::process::exit(1);
+            }
+        }
+    }
 
     let session_target = match cli.session.as_deref() {
         Some(session) => match resolve_session_target(provider, cli.provider.is_some(), session) {
@@ -8799,6 +8992,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 return Ok(());
+            }
+            Commands::Logout => {
+                // Handled before the browser starts (SIWC credentials only).
+                unreachable!("logout is handled earlier in main")
             }
             Commands::Login => {
                 if let Err(e) =
