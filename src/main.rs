@@ -8901,18 +8901,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 std::process::exit(1);
             }
-            Some(Commands::Get { .. }) | Some(Commands::Open { .. }) | Some(Commands::Close) => {
-                eprintln!(
-                    "Error: this command operates on the browser session and does not apply to --backend siwc"
-                );
-                std::process::exit(1);
-            }
-            _ => {
+            None => {
                 if let Err(e) = run_siwc_prompt(&cli) {
                     eprintln!("Error: {}", e);
                     std::process::exit(1);
                 }
                 return Ok(());
+            }
+            Some(_) => {
+                // Every remaining subcommand (get/open/close/dump/screenshot)
+                // operates on the browser session; only a bare prompt may
+                // enter the SIWC prompt path.
+                eprintln!(
+                    "Error: this command operates on the browser session and does not apply to --backend siwc"
+                );
+                std::process::exit(1);
             }
         }
     }
