@@ -20,6 +20,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::error::Error;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -395,6 +396,19 @@ pub fn parse_callback_query(query: &str) -> CallbackParams {
 // Token endpoint
 // ---------------------------------------------------------------------------
 
+fn format_http_error(context: &str, error: reqwest::Error) -> String {
+    // OAuth URLs may contain sensitive query parameters.
+    let error = error.without_url();
+    let mut message = format!("{}: {}", context, error);
+    let mut source = error.source();
+    while let Some(cause) = source {
+        message.push_str(": ");
+        message.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    message
+}
+
 #[derive(Debug, Deserialize)]
 pub struct TokenResponse {
     pub access_token: String,
@@ -422,7 +436,7 @@ async fn post_token_form(
         .form(fields)
         .send()
         .await
-        .map_err(|e| format!("token request failed: {}", e))?;
+        .map_err(|e| format_http_error("token request failed", e))?;
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -493,7 +507,7 @@ pub async fn validate_id_token(
         .get(DISCOVERY_URL)
         .send()
         .await
-        .map_err(|e| format!("failed to fetch OpenID configuration: {}", e))?
+        .map_err(|e| format_http_error("failed to fetch OpenID configuration", e))?
         .json()
         .await
         .map_err(|e| format!("invalid OpenID configuration: {}", e))?;
@@ -501,7 +515,7 @@ pub async fn validate_id_token(
         .get(&discovery.jwks_uri)
         .send()
         .await
-        .map_err(|e| format!("failed to fetch JWKS: {}", e))?
+        .map_err(|e| format_http_error("failed to fetch JWKS", e))?
         .json()
         .await
         .map_err(|e| format!("invalid JWKS: {}", e))?;
@@ -578,7 +592,7 @@ pub async fn fetch_models(
         .bearer_auth(access_token)
         .send()
         .await
-        .map_err(|e| format!("model catalog request failed: {}", e))?;
+        .map_err(|e| format_http_error("model catalog request failed", e))?;
     let status = response.status();
     if !status.is_success() {
         return Err(format!("model catalog request returned {}", status));
@@ -656,7 +670,7 @@ pub fn http_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .map_err(|e| format!("failed to build HTTP client: {}", e))
+        .map_err(|e| format_http_error("failed to build HTTP client", e))
 }
 
 /// Wait for one loopback callback request and return its query string.
@@ -1207,14 +1221,14 @@ pub async fn ask(
 
         let stream_http = reqwest::Client::builder()
             .build()
-            .map_err(|e| format!("failed to build HTTP client: {}", e))?;
+            .map_err(|e| format_http_error("failed to build HTTP client", e))?;
         let response = stream_http
             .post(format!("{}/responses", API_BASE))
             .bearer_auth(&access_token)
             .json(&build_responses_body(&model, prompt))
             .send()
             .await
-            .map_err(|e| format!("Responses request failed: {}", e))?;
+            .map_err(|e| format_http_error("Responses request failed", e))?;
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
@@ -1253,7 +1267,7 @@ pub async fn ask(
                     if accumulator.is_terminal() {
                         break;
                     }
-                    return Err(format!("the response stream was interrupted: {}", e));
+                    return Err(format_http_error("the response stream was interrupted", e));
                 }
             }
         }
@@ -1271,6 +1285,33 @@ pub async fn ask(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn http_errors_include_transport_causes_without_request_secrets() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let http = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_millis(100))
+            .build()
+            .unwrap();
+        let error = http
+            .post(format!(
+                "http://{}/?code=secret-code",
+                listener.local_addr().unwrap()
+            ))
+            .bearer_auth("secret-access-token")
+            .form(&[("refresh_token", "secret-refresh-token")])
+            .send()
+            .await
+            .unwrap_err();
+        assert!(error.is_timeout());
+
+        let message = format_http_error("token request failed", error);
+        assert!(message.starts_with("token request failed:"));
+        assert!(message.contains("operation timed out"), "{}", message);
+        assert!(!message.contains("secret-"), "{}", message);
+        assert!(!message.contains("127.0.0.1"), "{}", message);
+    }
 
     #[test]
     fn pkce_matches_rfc7636_vector() {
