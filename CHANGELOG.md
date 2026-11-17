@@ -6,6 +6,37 @@
 
 ---
 
+## [0.4.0] - 2026-11-18
+
+### 新增 (Added)
+- 新增 ChatGPT 選用 SIWC 後端：以 OAuth 動態註冊與 PKCE 登入，使用 ChatGPT Work／Codex 方案額度或 credits 呼叫公開 Responses API，免 API Key；預設 Browser/CDP 行為不變。
+- SIWC 支援單次純文字提問、stdin、帳號模型目錄與 `--model`、SSE 即時輸出、`-o`、整體請求逾時、重新登入與本機登出；可用 `config --chatgpt-backend siwc` 儲存預設值。
+- 新增 `batch` JSONL 批次工作，可設定 `--concurrency` 上限並行等待各自分頁的回覆，提供獨立輸出目錄、metadata、生成圖片、終態摘要與 `--fail-fast`。
+- 新增 `--temporary`，支援 ChatGPT／Gemini 臨時聊天與 Claude Incognito；送出前驗證模式，無法確認時中止，不送出問題。
+- 新增可設定的 Chromium 瀏覽器路徑及獨立 profile：支援 CLI、環境變數與持久設定，設定路徑不存在時直接報錯，不自動退回 Chrome。
+- 新增 ChatGPT 圖片生成百分比與圖片就緒狀態追蹤，等待生成完成後再下載圖片。
+
+### 修正 (Fixed)
+- 修正 Windows 更新流程使用 PowerShell `$pid` 與內建唯讀 `$PID` 衝突，導致更新失敗。
+- 修正 ChatGPT 生圖的最新回覆判定、100% 但尚未載入完成、多圖下載完整性與逾時回報，避免未完成結果被誤報成功。
+- 排除引用來源 favicon，避免純文字回覆卡在圖片掃描；完成的文字先寫入 `-o`，圖片下載失敗未指定 `-i` 時回報警告，指定 `-i` 時仍以失敗結束。
+- 強化批次分頁選取、擷取與 session 綁定的並行保護；對送出結果不明確的工作保留恢復資訊，不自動重送，並拒絕並行工作指向相同既有對話。
+- 強化 SIWC OAuth 驗證、授權網址遮罩、token 更新、SSE UTF-8 跨區塊解析及整體逾時；僅收到 `response.completed` 才視為成功，拒絕不支援的選項與子指令，不靜默切換後端或成本來源。
+- SIWC HTTPS 合併內建與系統 CA 信任庫，修正 Windows `UnknownIssuer` 相容性問題，並顯示不含請求 URL、headers 或 body 的底層連線原因。
+- 消除多餘初始賦值與未使用函式的三項編譯警告；修正網站手機選單遮擋及韓文長字串溢出。
+
+### 文件與發布 (Documentation and Release)
+- 擴充中英文 README 的 SIWC 快速上手、工作上下文、手動接續討論、功能矩陣、憑證管理及疑難排解，並說明 SIWC 不會自動讀取工作目錄、IDE 或 Agent 對話。
+- 首頁新增 SIWC 導覽及完整區塊，同步繁體中文、簡體中文、英文、日文與韓文，提供可複製指令、鍵盤可捲動比較表與中英文指南連結。
+- 補上方案額度可能與主要 Coding Agent 共用、非免費或無限 token、TLS 檢查可見 token 內容，以及本機 logout 不等同伺服器撤銷授權的說明。
+- 發布流程改由 Release 完成上傳後觸發 npm trusted publishing，並以腳本同步版本、驗證 CI、平台產物與 npm 套件。
+
+### 注意事項 (Notes)
+- SIWC 目前僅支援 ChatGPT 單次純文字推論；不支援網頁 session、多輪歷史管理、附件、生圖、`--reasoning`、`--temporary` 或 `batch`，相關選項會明確拒絕。
+- 依 issue #40 結案紀錄，已在 Windows 實測 SIWC 登入與單次文字對話；refresh 輪替與失效、撤銷效果、額度耗盡、網路中斷及效能／成本基準尚未逐項完成真實環境驗證，不宣稱必然更快或更省 token。
+
+---
+
 ## [0.3.1] - 2026-10-15
 
 ### 🔧 修復 (Fixed)
