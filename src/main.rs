@@ -8836,6 +8836,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    let session_target = match cli.session.as_deref() {
+        Some(session) => match resolve_session_target(provider, cli.provider.is_some(), session) {
+            Ok(target) => {
+                provider = target.0;
+                Some(target)
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        },
+        None => None,
+    };
+
+    // Backend resolution and SIWC dispatch happen only after the session
+    // target has had its chance to determine the effective provider from a
+    // session URL, so a persisted ChatGPT backend preference can never
+    // hijack another provider's session commands.
     let backend = match resolve_backend(cli.backend, provider) {
         Ok(backend) => backend,
         Err(e) => {
@@ -8898,20 +8916,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-
-    let session_target = match cli.session.as_deref() {
-        Some(session) => match resolve_session_target(provider, cli.provider.is_some(), session) {
-            Ok(target) => {
-                provider = target.0;
-                Some(target)
-            }
-            Err(e) => {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-        },
-        None => None,
-    };
 
     if let Err(e) = validate_provider_feature_support(provider, &cli) {
         eprintln!("Error: {}", e);
