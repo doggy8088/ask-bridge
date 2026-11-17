@@ -987,15 +987,14 @@ fn run_job_inner(ctx: &BatchContext, job: &JobSpec) -> (JobOutcome, Provider) {
         }
         Ok(content)
     });
-    let mut markdown = String::new();
-    match extraction {
-        Ok(content) => markdown = content,
+    let markdown = match extraction {
+        Ok(content) => content,
         Err(e) => {
             outcome.error = Some(e);
             outcome.elapsed = started.elapsed();
             return (outcome, provider);
         }
-    }
+    };
 
     let job_dir = job_output_dir(&ctx.output_dir, &job.id);
     if let Err(e) = write_atomic(&job_dir.join("response.md"), markdown.as_bytes()) {

@@ -1762,6 +1762,7 @@ fn wsl_windows_profile_path_named(profile_name: &str) -> Result<String, String> 
 
 /// Whether a configured browser path points at a Windows-host executable
 /// (relevant under WSL, where its profile must live on the Windows fs).
+#[cfg(target_os = "linux")]
 fn is_windows_browser_path(browser_path: &str) -> bool {
     let normalized = browser_path.replace('\\', "/").to_ascii_lowercase();
     normalized.starts_with("/mnt/")

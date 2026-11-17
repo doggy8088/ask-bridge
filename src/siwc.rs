@@ -19,7 +19,6 @@ use clap::ValueEnum;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
 use std::error::Error;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -938,28 +937,6 @@ pub fn logout() -> Result<(), String> {
         println!("No SIWC credentials were stored.");
     }
     Ok(())
-}
-
-/// A compact view of the currently stored sign-in state (never includes
-/// token values).
-pub fn describe_store(store: &SiwcStore) -> BTreeMap<&'static str, String> {
-    let mut map = BTreeMap::new();
-    match store.active_account() {
-        Some(account) => {
-            map.insert(
-                "account",
-                account
-                    .email
-                    .clone()
-                    .unwrap_or_else(|| account.subject.clone()),
-            );
-            map.insert("plan_scope", account.has_plan_scope().to_string());
-        }
-        None => {
-            map.insert("account", "not signed in".to_string());
-        }
-    }
-    map
 }
 
 // ---------------------------------------------------------------------------
