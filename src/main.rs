@@ -1180,6 +1180,88 @@ fn write_global_provider_config(provider: Provider) -> Result<(), String> {
     Ok(())
 }
 
+/// Fail-fast compatibility matrix for the SIWC backend (issue #40):
+/// web-conversation features and not-yet-supported options are rejected
+/// with an explicit message instead of silently degrading.
+fn validate_siwc_prompt_flags(cli: &Cli) -> Result<(), String> {
+    if cli.session.is_some() {
+        return Err(
+            "--session cannot be used with --backend siwc: SIWC runs through the API and cannot access ChatGPT web conversations"
+                .to_string(),
+        );
+    }
+    if cli.temporary {
+        return Err("--temporary is not supported with --backend siwc".to_string());
+    }
+    if cli.new {
+        return Err(
+            "--new is not supported with --backend siwc: every SIWC request is independent"
+                .to_string(),
+        );
+    }
+    if cli.image_output.is_some() {
+        return Err(
+            "--image-output is not supported with --backend siwc: image generation is not available on this API route"
+                .to_string(),
+        );
+    }
+    if !cli.images.is_empty() || !cli.files.is_empty() {
+        return Err(
+            "--image/--file attachments are not supported with --backend siwc yet".to_string(),
+        );
+    }
+    if cli.reasoning.is_some() {
+        return Err("--reasoning is not supported with --backend siwc yet".to_string());
+    }
+    Ok(())
+}
+
+/// The SIWC prompt path: same prompt/stdin assembly and `-o` contract as
+/// the browser flow, but answered by the Responses API instead of Chrome.
+fn run_siwc_prompt(cli: &Cli) -> Result<(), String> {
+    validate_siwc_prompt_flags(cli)?;
+
+    let mut stdin_prompt = String::new();
+    if !std::io::stdin().is_terminal() {
+        let (probe_rx, data_rx) = spawn_stdin_reader();
+        stdin_prompt =
+            recv_piped_stdin(&probe_rx, &data_rx, STDIN_PIPE_GRACE, cli.prompt.is_some())
+                .map_err(|e| format!("failed to read stdin: {}", e))?;
+    }
+    let prompt = match &cli.prompt {
+        Some(p) => {
+            if stdin_prompt.is_empty() {
+                p.clone()
+            } else {
+                format!("{}\n\n{}", p, stdin_prompt)
+            }
+        }
+        None => stdin_prompt,
+    };
+    let prompt = prompt.trim().to_string();
+    if prompt.is_empty() {
+        let mut cmd = Cli::command();
+        println!("ask-bridge {}", env!("CARGO_PKG_VERSION"));
+        let _ = cmd.print_help();
+        println!();
+        return Ok(());
+    }
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("failed to start async runtime: {}", e))?;
+    let text = runtime.block_on(siwc::ask(&prompt, cli.model.as_deref(), cli.timeout))?;
+    if let Some(output_path) = &cli.output {
+        std::fs::write(output_path, &text)
+            .map_err(|e| format!("failed to write output file {}: {}", output_path, e))?;
+        if cli.verbose {
+            println!("Successfully wrote Markdown response to {}", output_path);
+        }
+    }
+    Ok(())
+}
+
 fn run_config_command(
     cli_provider: Option<Provider>,
     browser_path_arg: Option<String>,
@@ -4003,6 +4085,30 @@ mod tests {
         // No backend flag: the browser backend stays the default.
         let cli = Cli::try_parse_from(["ask-bridge", "hello"]).unwrap();
         assert_eq!(cli.backend, None);
+    }
+
+    #[test]
+    fn siwc_prompt_flag_matrix_rejects_web_only_options() {
+        let base = ["ask-bridge", "--backend", "siwc"];
+        let ok = Cli::try_parse_from(base.iter().chain(["hello"].iter())).unwrap();
+        assert!(validate_siwc_prompt_flags(&ok).is_ok());
+
+        for extra in [
+            vec!["--session", "https://chatgpt.com/c/abc", "hello"],
+            vec!["--temporary", "hello"],
+            vec!["--new", "hello"],
+            vec!["-i", "out.png", "hello"],
+            vec!["--image", "a.png", "hello"],
+            vec!["--file", "a.pdf", "hello"],
+            vec!["--reasoning", "high", "hello"],
+        ] {
+            let cli = Cli::try_parse_from(base.iter().chain(extra.iter())).unwrap();
+            assert!(
+                validate_siwc_prompt_flags(&cli).is_err(),
+                "expected rejection for {:?}",
+                extra
+            );
+        }
     }
 
     #[test]
@@ -8736,10 +8842,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
             _ => {
-                eprintln!(
-                    "Error: SIWC sign-in is available (`ask-bridge --backend siwc login`), but SIWC inference is not included in this build yet (issue #40)"
-                );
-                std::process::exit(1);
+                if let Err(e) = run_siwc_prompt(&cli) {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+                return Ok(());
             }
         }
     }

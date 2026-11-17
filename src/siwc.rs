@@ -900,6 +900,267 @@ pub fn describe_store(store: &SiwcStore) -> BTreeMap<&'static str, String> {
     map
 }
 
+// ---------------------------------------------------------------------------
+// Inference (Responses API over SSE)
+// ---------------------------------------------------------------------------
+
+/// Build the `/v1/responses` request body. Only fields the SIWC route
+/// accepts are sent: `store: false` and `stream: true` are mandatory, and
+/// fields such as `temperature`, `max_output_tokens`, `metadata` or `user`
+/// must be omitted entirely.
+pub fn build_responses_body(model: &str, prompt: &str) -> serde_json::Value {
+    serde_json::json!({
+        "model": model,
+        "input": [{ "role": "user", "content": prompt }],
+        "store": false,
+        "stream": true,
+    })
+}
+
+/// Resolve a user-supplied `--model` value against the account catalog:
+/// exact slug, then case-insensitive slug or display name (mirroring the
+/// web flow's forgiving menu-label matching). Without a value, the first
+/// catalog entry (the account's server-ordered default) is used.
+pub fn resolve_model(catalog: &[ModelInfo], requested: Option<&str>) -> Result<String, String> {
+    if catalog.is_empty() {
+        return Err("the account model catalog is empty; no SIWC models are available".to_string());
+    }
+    let Some(requested) = requested.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(catalog[0].slug.clone());
+    };
+    if let Some(found) = catalog.iter().find(|m| m.slug == requested) {
+        return Ok(found.slug.clone());
+    }
+    let lowered = requested.to_ascii_lowercase();
+    if let Some(found) = catalog.iter().find(|m| {
+        m.slug.to_ascii_lowercase() == lowered || m.display_name.to_ascii_lowercase() == lowered
+    }) {
+        return Ok(found.slug.clone());
+    }
+    let available = catalog
+        .iter()
+        .map(|m| m.slug.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "model \"{}\" is not available to this ChatGPT account; available models: {}",
+        requested, available
+    ))
+}
+
+/// Accumulates one SSE stream into its final outcome. Only
+/// `response.completed` counts as success; failures that arrive mid-stream
+/// (including plan usage limits) are surfaced with their error code.
+#[derive(Debug, Default)]
+pub struct StreamAccumulator {
+    pub text: String,
+    pub completed: bool,
+    pub failure: Option<String>,
+    pub incomplete: Option<String>,
+}
+
+impl StreamAccumulator {
+    /// Apply one SSE `data:` payload; returns any output text delta so the
+    /// caller can print it live.
+    pub fn apply(&mut self, data: &str) -> Option<String> {
+        let data = data.trim();
+        if data.is_empty() || data == "[DONE]" {
+            return None;
+        }
+        let event: serde_json::Value = serde_json::from_str(data).ok()?;
+        match event.get("type").and_then(|t| t.as_str()) {
+            Some("response.output_text.delta") => {
+                let delta = event
+                    .get("delta")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                self.text.push_str(&delta);
+                Some(delta)
+            }
+            Some("response.completed") => {
+                self.completed = true;
+                None
+            }
+            Some("response.failed") => {
+                let error = event
+                    .get("response")
+                    .and_then(|r| r.get("error"))
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                let code = error
+                    .get("code")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("unknown_error");
+                let message = error
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or_default();
+                self.failure = Some(
+                    format!("{}: {}", code, message)
+                        .trim_end_matches(": ")
+                        .to_string(),
+                );
+                None
+            }
+            Some("response.incomplete") => {
+                let reason = event
+                    .get("response")
+                    .and_then(|r| r.get("incomplete_details"))
+                    .and_then(|d| d.get("reason"))
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("unknown reason");
+                self.incomplete = Some(reason.to_string());
+                None
+            }
+            _ => None,
+        }
+    }
+
+    pub fn into_result(self) -> Result<String, String> {
+        if let Some(failure) = &self.failure {
+            if failure.contains("subscription_sharing_usage_limit_exceeded")
+                || failure.contains("subscription_sharing_usage_unavailable")
+            {
+                return Err(format!(
+                    "ChatGPT plan usage limit reached ({}). The SIWC backend draws on your plan's Work/Codex usage or credits; wait for the limit to reset or switch back to --backend browser. No fallback was attempted",
+                    failure
+                ));
+            }
+            return Err(format!("the response failed: {}", failure));
+        }
+        if let Some(reason) = &self.incomplete {
+            return Err(format!("the response ended incomplete: {}", reason));
+        }
+        if !self.completed {
+            return Err(
+                "the stream ended without response.completed; the response is not usable"
+                    .to_string(),
+            );
+        }
+        Ok(self.text)
+    }
+}
+
+/// Incremental SSE framing: buffers raw bytes and yields complete
+/// `data:` payloads per event block.
+#[derive(Default)]
+pub struct SseParser {
+    buffer: String,
+}
+
+impl SseParser {
+    pub fn push(&mut self, chunk: &[u8]) -> Vec<String> {
+        self.buffer.push_str(&String::from_utf8_lossy(chunk));
+        let mut payloads = Vec::new();
+        while let Some(idx) = self.buffer.find("\n\n") {
+            let block: String = self.buffer.drain(..idx + 2).collect();
+            let data: Vec<&str> = block
+                .lines()
+                .filter_map(|line| line.strip_prefix("data:"))
+                .map(|d| d.trim_start())
+                .collect();
+            if !data.is_empty() {
+                payloads.push(data.join("\n"));
+            }
+        }
+        payloads
+    }
+}
+
+fn classify_http_error(status: reqwest::StatusCode, body: &str) -> String {
+    let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+    let code = parsed
+        .get("error")
+        .and_then(|e| e.get("code"))
+        .and_then(|c| c.as_str())
+        .unwrap_or_default();
+    let message = parsed
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(|m| m.as_str())
+        .unwrap_or_default();
+    match status.as_u16() {
+        401 => "the stored ChatGPT sign-in was rejected (401); run `ask-bridge --provider chatgpt --backend siwc login` again".to_string(),
+        429 => format!(
+            "ChatGPT plan usage or rate limit reached (429): {} {}",
+            code, message
+        )
+        .trim()
+        .to_string(),
+        _ => format!("Responses API returned {}: {} {}", status, code, message)
+            .trim()
+            .to_string(),
+    }
+}
+
+/// Run one single-turn prompt through the SIWC backend, streaming output
+/// text to stdout as it arrives. Returns the full response text on
+/// success (the caller handles `-o` persistence).
+pub async fn ask(
+    prompt: &str,
+    requested_model: Option<&str>,
+    timeout_secs: u64,
+) -> Result<String, String> {
+    let mut store = load_store()?;
+    if store.active_account().is_none() {
+        return Err(
+            "not signed in with ChatGPT; run `ask-bridge --provider chatgpt --backend siwc login` first"
+                .to_string(),
+        );
+    }
+    let http = reqwest::Client::builder()
+        .build()
+        .map_err(|e| format!("failed to build HTTP client: {}", e))?;
+    let access_token = fresh_access_token(&http, &mut store).await?;
+    let catalog = fetch_models(&http, &access_token).await?;
+    let model = resolve_model(&catalog, requested_model)?;
+
+    let deadline = std::time::Duration::from_secs(timeout_secs.max(1));
+    let exchange = async {
+        let response = http
+            .post(format!("{}/responses", API_BASE))
+            .bearer_auth(&access_token)
+            .json(&build_responses_body(&model, prompt))
+            .send()
+            .await
+            .map_err(|e| format!("Responses request failed: {}", e))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(classify_http_error(status, &body));
+        }
+        let mut response = response;
+        let mut parser = SseParser::default();
+        let mut accumulator = StreamAccumulator::default();
+        use std::io::Write;
+        loop {
+            match response.chunk().await {
+                Ok(Some(chunk)) => {
+                    for payload in parser.push(&chunk) {
+                        if let Some(delta) = accumulator.apply(&payload) {
+                            print!("{}", delta);
+                            let _ = std::io::stdout().flush();
+                        }
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    return Err(format!("the response stream was interrupted: {}", e));
+                }
+            }
+        }
+        accumulator.into_result()
+    };
+    let text = tokio::time::timeout(deadline, exchange)
+        .await
+        .map_err(|_| format!("SIWC request timed out after {} seconds", timeout_secs))??;
+    if !text.ends_with('\n') {
+        println!();
+    }
+    Ok(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1013,6 +1274,84 @@ mod tests {
         let active = restored.active_account().unwrap();
         assert_eq!(active.email.as_deref(), Some("user@example.com"));
         assert!(active.has_plan_scope());
+    }
+
+    #[test]
+    fn responses_body_uses_only_allowed_fields() {
+        let body = build_responses_body("gpt-x", "hello");
+        assert_eq!(body["model"], "gpt-x");
+        assert_eq!(body["store"], false);
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["input"][0]["role"], "user");
+        assert_eq!(body["input"][0]["content"], "hello");
+        for forbidden in [
+            "temperature",
+            "max_output_tokens",
+            "metadata",
+            "user",
+            "previous_response_id",
+        ] {
+            assert!(
+                body.get(forbidden).is_none(),
+                "field {} must be omitted",
+                forbidden
+            );
+        }
+    }
+
+    #[test]
+    fn stream_accumulator_handles_delta_completed_failed_and_incomplete() {
+        let mut acc = StreamAccumulator::default();
+        let delta = acc.apply(r#"{"type":"response.output_text.delta","delta":"Hello"}"#);
+        assert_eq!(delta.as_deref(), Some("Hello"));
+        acc.apply(r#"{"type":"response.output_text.delta","delta":" world"}"#);
+        acc.apply(r#"{"type":"response.completed","response":{}}"#);
+        assert_eq!(acc.into_result().unwrap(), "Hello world");
+
+        let mut acc = StreamAccumulator::default();
+        acc.apply(r#"{"type":"response.failed","response":{"error":{"code":"subscription_sharing_usage_limit_exceeded","message":"limit"}}}"#);
+        assert!(acc.into_result().unwrap_err().contains("plan usage limit"));
+
+        let mut acc = StreamAccumulator::default();
+        acc.apply(r#"{"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}"#);
+        assert!(acc.into_result().unwrap_err().contains("incomplete"));
+
+        let mut acc = StreamAccumulator::default();
+        acc.apply(r#"{"type":"response.output_text.delta","delta":"partial"}"#);
+        assert!(
+            acc.into_result()
+                .unwrap_err()
+                .contains("response.completed")
+        );
+    }
+
+    #[test]
+    fn sse_parser_frames_events_across_chunks() {
+        let mut parser = SseParser::default();
+        let first = parser.push(b"data: {\"type\":\"one\"}\n\ndata: {\"type\":\"tw");
+        assert_eq!(first, vec!["{\"type\":\"one\"}"],);
+        let second = parser.push(b"o\"}\n\n");
+        assert_eq!(second, vec!["{\"type\":\"two\"}"],);
+    }
+
+    #[test]
+    fn model_resolution_matches_slug_then_display_name() {
+        let catalog = vec![
+            ModelInfo {
+                slug: "gpt-a".to_string(),
+                display_name: "GPT A".to_string(),
+            },
+            ModelInfo {
+                slug: "gpt-b".to_string(),
+                display_name: "GPT B".to_string(),
+            },
+        ];
+        assert_eq!(resolve_model(&catalog, None).unwrap(), "gpt-a");
+        assert_eq!(resolve_model(&catalog, Some("gpt-b")).unwrap(), "gpt-b");
+        assert_eq!(resolve_model(&catalog, Some("GPT A")).unwrap(), "gpt-a");
+        let err = resolve_model(&catalog, Some("gpt-z")).unwrap_err();
+        assert!(err.contains("gpt-a, gpt-b"), "unexpected: {}", err);
+        assert!(resolve_model(&[], None).is_err());
     }
 
     #[test]
