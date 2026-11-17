@@ -1436,12 +1436,17 @@ mod tests {
     fn sse_parser_preserves_utf8_split_across_chunks_and_crlf_frames() {
         // Split the stream inside a multi-byte character and use CRLF
         // event separators: the decoded payload must be intact.
-        let raw =
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"中文\"}\r\n\r\n".as_bytes();
-        let split = 20;
+        let raw_text = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"中文\"}\r\n\r\n";
+        let raw = raw_text.as_bytes();
+        // Split inside the multi-byte characters themselves: the first cut
+        // lands after the first byte of 中, the second after the first
+        // byte of 文. Per-chunk lossy decoding would corrupt both.
+        let first = raw_text.find("中文").unwrap() + 1;
+        let second = raw_text.find("文").unwrap() + 1;
         let mut parser = SseParser::default();
-        assert!(parser.push(&raw[..split]).is_empty());
-        let payloads = parser.push(&raw[split..]);
+        assert!(parser.push(&raw[..first]).is_empty());
+        assert!(parser.push(&raw[first..second]).is_empty());
+        let payloads = parser.push(&raw[second..]);
         assert_eq!(payloads.len(), 1);
         let mut acc = StreamAccumulator::default();
         let delta = acc.apply(&payloads[0]);
