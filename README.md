@@ -43,6 +43,7 @@
 - **接續既有對話**：使用 `--session`、`--session-id` 或 `--session-url` 指定既有對話，再從終端機送出新的 prompt。
 - **臨時聊天**：使用 `--temporary` 建立不保留於一般聊天歷史的臨時對話（ChatGPT／Gemini 的 Temporary Chat、Claude 的 Incognito Chat）；送出前會先確認已進入臨時模式，無法確認時直接中止、不送出問題。
 - **批次執行**：使用 `ask-bridge batch` 以 JSONL 一次提交多個工作，每個工作使用獨立分頁與獨立輸出目錄，互不串線；結束時輸出各終態的統計摘要。
+- **SIWC API 後端（選用）**：ChatGPT 可改走 Sign in with ChatGPT 官方 OAuth 流程，以訂閱方案額度呼叫公開 Responses API，不需 API Key、不啟動瀏覽器；預設的瀏覽器後端完全不變，詳見使用方式第 16 節。
 - **回應超時**：使用 `--timeout <秒數>` 設定等待回應上限，預設為 `300` 秒。
 - **預設安靜模式與 verbose 模式**：預設只輸出最終回覆；加上 `--verbose` 可顯示背景瀏覽器控制流程。
 - **版本資訊**：使用 `-v` 或 `--version` 顯示目前版本號。
@@ -494,6 +495,48 @@ Cancelled）；任一工作未完成時結束代碼為 1。加上 `--fail-fast` 
 依輸入順序進行。工作結束後其分頁會自動關閉，僅 `Recoverable`（送出
 結果不明確）的工作保留分頁供人工復原，保留數量以不明確送出的次數為
 上限。
+
+### 16. 使用 ChatGPT 訂閱額度 API 後端（`--backend siwc`）
+
+ChatGPT provider 除了預設的瀏覽器自動化，也可選用 Sign in with ChatGPT（SIWC）後端：透過 OpenAI 官方為開源工具提供的 OAuth 流程登入後，直接呼叫公開的 Responses API，不需要自行申請 API Key，也不啟動 Chrome。
+
+```bash
+# 登入（開啟系統瀏覽器完成 OAuth 授權；首次會進行動態註冊）
+ask-bridge --provider chatgpt --backend siwc login
+
+# 提問（回覆以串流即時輸出；stdin、`-o`、`--timeout` 與瀏覽器模式相同）
+ask-bridge --provider chatgpt --backend siwc "摘要這份文件的重點"
+cat report.md | ask-bridge --provider chatgpt --backend siwc "摘要重點"
+
+# 指定模型（以帳號的模型目錄為準；未指定時使用目錄中的第一個模型）
+ask-bridge --provider chatgpt --backend siwc --model <model-slug> "比較兩個技術方案"
+
+# 登出（刪除本機保存的 SIWC 憑證）
+ask-bridge --provider chatgpt --backend siwc logout
+
+# 持久設定預設後端（寫入 ~/.config/ask-bridge/config.json 的 chatgptBackend）
+ask-bridge config --chatgpt-backend siwc
+```
+
+**額度說明（重要）**：SIWC 呼叫消耗的是你 ChatGPT 方案的 Work／Codex 使用額度或 credits，**不是免費、也不是無限 token**；它省下的是額外 API Key 的按量帳單與瀏覽器自動化的不穩定性。額度用盡時工具會直接回報錯誤，不會自動改走瀏覽器後端、更不會自動改用任何 API Key 額度。
+
+| 面向 | Browser 後端（預設） | SIWC 後端 |
+| --- | --- | --- |
+| 設定 | `ask-bridge login` 登入網站 | `--backend siwc login` 完成 OAuth 授權 |
+| API Key | 不需要 | 不需要 |
+| 啟動成本 | 啟動並控制 Chrome | 直接 HTTP 串流 |
+| 既有網頁對話 | 可用 `--session` 接續 | 不可讀取網頁對話（每次提問獨立） |
+| 圖片／文件輸入 | 支援 `--image`／`--file` | 尚未支援（會明確拒絕） |
+| 生圖與下載 | 支援 `--image-output` | 不支援（API 路由無此能力） |
+| 臨時聊天 | 支援 `--temporary` | 不支援（會明確拒絕） |
+| 批次執行 | 支援 `batch` | 不支援（會明確拒絕） |
+| 額度來源 | 網頁版方案限制 | ChatGPT 方案 Work／Codex 額度或 credits |
+
+限制與行為：
+
+- 憑證保存於 `~/.config/ask-bridge/siwc-credentials.json`（原子寫入，Unix 權限 0600），token 不會出現在任何輸出或日誌；access token 過期會自動以 refresh token 換新，失效時請重新 `login`。
+- SIWC 為 OpenAI 的 Preview 流程，可用模型與額度政策以帳號實際狀態為準；`--model` 會對照帳號模型目錄驗證，不存在時會列出可用模型。
+- 與 SIWC 不相容的選項（`--session`、`--temporary`、`--new`、`--reasoning`、`--image`、`--file`、`--image-output`、`batch`）一律在使用前明確拒絕，不會靜默降級或改走其他後端。
 
 ## 運作原理
 
