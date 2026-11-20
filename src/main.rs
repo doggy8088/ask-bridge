@@ -7917,7 +7917,7 @@ fn wait_for_chatgpt_agent_menu(config_path: &str) -> Result<(), String> {
                     Math.abs(rect.top - composerRect.bottom) <= 500;
             };
             const items = Array.from(document.querySelectorAll(
-                '.popover .__menu-item, [class*="popover"] .__menu-item, [role="menuitem"], [role="option"], [cmdk-item]'
+                '.popover .__menu-item, [class*="popover"] .__menu-item, [role="menuitem"], [role="option"], [cmdk-item], [data-list-navigation-item]'
             ))
                 .filter((el) => isVisible(el) && isNearComposer(el))
                 .map((el) => (el.innerText || el.textContent || '').trim())
@@ -7963,7 +7963,7 @@ fn wait_for_chatgpt_agent_selection(config_path: &str) -> Result<(), String> {
                 return { ok: false, error: 'composer not found' };
             }
             const agentPill = composer.querySelector(
-                '[data-id="agent"], [data-system-hint-type="agent"], [data-symbol="ecosystemMention"], [data-inline-selection-pill][contenteditable="false"]'
+                '[data-id="agent"], [data-system-hint-type="agent"], [data-symbol="ecosystemMention"], [data-inline-selection-pill][contenteditable="false"], [data-appearance="inline-mention"], [app-mention-name]'
             );
             return {
                 ok: Boolean(agentPill),
@@ -8186,7 +8186,7 @@ fn submit_chatgpt_agent_prompt(
                         return;
                     }
                     const agentPill = el.querySelector(
-                        '[data-id="agent"], [data-system-hint-type="agent"], [data-symbol="ecosystemMention"], [data-inline-selection-pill][contenteditable="false"]'
+                        '[data-id="agent"], [data-system-hint-type="agent"], [data-symbol="ecosystemMention"], [data-inline-selection-pill][contenteditable="false"], [data-appearance="inline-mention"], [app-mention-name]'
                     );
                     if (!agentPill) {
                         window.__submit_status = 'error: ChatGPT agent was not selected into the composer';
