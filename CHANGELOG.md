@@ -4,6 +4,9 @@
 
 ## [Unreleased]
 
+### 修正 (Fixed)
+- 修正在新版 ChatGPT 網頁輸入 `@Agent 名稱 提示詞`（如 `@深度研究 保哥是誰？`）時卡住的問題：新版瀏覽器版面的 Agent 候選選單改為 suggestion menu item（`[data-list-navigation-item]`），舊版選擇器偵測不到選單或 Tab 後產生的 mention pill，導致流程逾時中止、正文未輸入也未送出。同步更新選單偵測與 Agent pill/inline mention 選擇器，相容新舊兩種版面。
+
 ---
 
 ## [0.4.0] - 2026-11-18
